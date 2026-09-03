@@ -196,6 +196,47 @@ export async function checkRepo(entry) {
   return { state: 'unknown' };
 }
 
+const URL_RE = /https?:\/\/[^\s<>"')\]]+/i;
+
+/**
+ * 웹페이지 인용에 아카이브 사본이 있는지 본다.
+ *
+ * 페이지가 지금도 살아 있는지는 브라우저에서 확인할 수 없다. 대상 사이트가
+ * CORS 를 안 열어 주므로 mode:'cors' 는 항상 실패하고, mode:'no-cors' 는
+ * 200 과 404 를 똑같이 opaque(status 0) 로 준다. 도메인이 죽으면 예외가 나서
+ * 그것만은 구분되는 듯했지만, 실측에서 살아 있는 사이트(Tumblr 호스팅)도
+ * 예외를 냈다. 살아 있는 인용을 죽었다고 하는 건 아무 말 안 하느니만 못하므로
+ * 생사 판정은 하지 않는다.
+ *
+ * 대신 아카이브 사본을 알려준다. 인용 링크가 썩었을 때 실제로 필요한 것이다.
+ *
+ * @returns {Promise<{url: string, archive: object|null}|null>}
+ */
+export async function checkWeb(entry) {
+  const m = URL_RE.exec(entry);
+  if (!m) return null;
+  const url = m[0].replace(/[.,;]+$/, '');
+  const key = `web:${url}`;
+  if (cache.has(key)) return cache.get(key);
+
+  let archive = null;
+  try {
+    await gate.openalex();   // 아카이브도 같은 정도로 아껴 쓴다
+    const r = await fetch('https://archive.org/wayback/available?url='
+      + encodeURIComponent(url.replace(/^https?:\/\//i, '')));
+    if (r.ok) {
+      const snap = (await r.json())?.archived_snapshots?.closest;
+      if (snap?.available) {
+        archive = { url: snap.url, timestamp: snap.timestamp, status: snap.status };
+      }
+    }
+  } catch { /* 아카이브 조회 실패는 그냥 없음으로 */ }
+
+  const out = { url, archive };
+  cache.set(key, out);
+  return out;
+}
+
 /**
  * 철회·정정 여부를 한꺼번에 조회한다.
  * Crossref 는 Retraction Watch 데이터를 updated-by 로 노출한다.

@@ -2,7 +2,8 @@ import * as pdfjsLib from '../vendor/pdfjs/pdf.min.mjs';
 import { extractText } from './pdftext.js';
 import { sliceReferences, splitEntries, extractDoi } from './refs.js';
 import {
-  fetchDoi, crossrefSearch, openAlexSearch, crossrefUpdates, checkRepo, pool, clearCache,
+  fetchDoi, crossrefSearch, openAlexSearch, crossrefUpdates, checkRepo, checkWeb,
+  pool, clearCache,
 } from './meta.js';
 import {
   compare, scoreCandidate, cslTitle, cslAuthors, cslYear, cslContainer,
@@ -239,7 +240,9 @@ async function searchOne(item, mailto) {
       repo,
     };
   }
-  if (WEBISH_RE.test(item.entry)) return { ...item, found: null, skipped: 'web' };
+  if (WEBISH_RE.test(item.entry)) {
+    return { ...item, found: null, skipped: 'web', web: await checkWeb(item.entry) };
+  }
   const search = await crossrefSearch(item.entry, { rows: 3, mailto });
   if (!search.ok) return { ...item, found: null, skipped: 'error' };
   let best = pickBest(item.entry, search.items, 'crossref');
@@ -526,6 +529,8 @@ function refItem({ r, src, kind }) {
     body.append(candidateBlock(r.found));
   } else if (r.repo && r.repo.state !== 'unknown') {
     body.append(repoBlock(r.repo));
+  } else if (r.web) {
+    body.append(webBlock(r.web));
   }
 
   // 어느 항목이든 원문으로 바로 갈 수 있게 한다
@@ -608,6 +613,30 @@ function side(cls, key, spans, raw) {
   }
   r.append(v);
   return r;
+}
+
+/**
+ * 웹페이지 인용 확인 결과.
+ * 생사는 브라우저에서 판정할 수 없으므로(살아 있는 사이트도 예외를 내는 걸
+ * 확인했다) 아카이브 사본만 알려준다.
+ */
+function webBlock(web) {
+  const T = t();
+  const box = el('div', 'fld');
+  box.append(el('div', 'fld-k', T.k.web));
+  const v = el('div', 'fld-v');
+  v.append(el('div', 'note', T.note.liveUnknown));
+  if (web.archive) {
+    const ts = web.archive.timestamp || '';
+    const pretty = ts.length >= 8 ? `${ts.slice(0, 4)}-${ts.slice(4, 6)}-${ts.slice(6, 8)}` : ts;
+    const links = el('div', 'links');
+    links.append(outLink(web.archive.url, T.note.snapshot(pretty)));
+    v.append(links);
+  } else {
+    v.append(el('div', 'note', T.note.noSnapshot));
+  }
+  box.append(v);
+  return box;
 }
 
 /** 저장소가 아직 있는지 확인한 결과 */
