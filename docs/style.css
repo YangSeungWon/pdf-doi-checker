@@ -222,6 +222,10 @@ button.ghost { font-size: .95rem; padding: .45rem .95rem; color: var(--dim); }
 .gap:hover { color: var(--fg); background: var(--panel); }
 .gap-i { font-family: var(--mono); width: 5rem; flex: none; letter-spacing: .15em; }
 .gap-r { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.gap-add {
+  color: var(--ok); font-size: .85rem;
+  border: 1px solid currentColor; padding: 0 .4rem; margin-left: auto;
+}
 .ref-n .st { font-weight: 700; }
 .st.error, .st.fail { color: var(--err); }
 .st.warn, .st.likely { color: var(--warn); }

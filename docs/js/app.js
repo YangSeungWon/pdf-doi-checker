@@ -412,11 +412,11 @@ function render() {
 function appendRows(list, rows, band) {
   let i = 0;
   while (i < rows.length) {
-    if (band && BANDABLE.includes(rows[i].kind)) {
+    if (band && CLEAN.includes(rows[i].kind)) {
       let j = i;
-      while (j < rows.length && BANDABLE.includes(rows[j].kind)) j++;
+      while (j < rows.length && CLEAN.includes(rows[j].kind)) j++;
       const run = rows.slice(i, j);
-      if (run.length >= 3) {
+      if (run.length >= 2) {
         list.append(gapBand(run));
         i = j;
         continue;
@@ -431,8 +431,10 @@ function gapBand(run) {
   const b = el('button', 'gap');
   const from = run[0].r.label;
   const to = run[run.length - 1].r.label;
+  const add = run.filter(x => x.kind === 'found').length;
   b.append(el('span', 'gap-i', '⋯'), el('span', 'gap-r', `[${from}]–[${to}]`),
     el('span', 'gap-l', t().gapOk(run.length)));
+  if (add) b.append(el('span', 'gap-add', t().gapAdd(add)));
   b.onclick = () => {
     const frag = document.createDocumentFragment();
     run.forEach(x => frag.append(refItem(x)));
@@ -445,8 +447,10 @@ function gapBand(run) {
 // 목록 — 참고문헌 번호를 거터에 두고, 비교는 좌우 diff 로 보여준다
 // ---------------------------------------------------------------------------
 
-const CLEAN = ['match', 'found', 'web'];      // 펼치지 않고 한 줄로 두는 것
-const BANDABLE = ['match', 'web'];            // 손댈 게 없어 중략해도 되는 것
+// 손볼 것이 없는 것들. 펼치지 않고, 이어지면 중략 띠로 접는다.
+// '확인됨' 도 여기 든다 — 틀린 데가 없고 넣을 DOI 가 있을 뿐이라,
+// 그 사실은 띠에 개수로만 남기고 자세한 건 칩으로 걸러 본다.
+const CLEAN = ['match', 'found', 'web'];
 
 /** 참고문헌 한 건. 문제 없는 건 접어둔다. */
 function refItem({ r, src, kind }) {
@@ -488,14 +492,21 @@ function doiLink(doi) {
   return a;
 }
 
+/** 저자 · 게재처 · 연도. 비어 있는 칸은 구분점째로 뺀다. */
+function bylineOf(rec) {
+  const authors = rec.authors || [];
+  const who = authors.slice(0, 4).join(', ') + (authors.length > 4 ? ' +' : '');
+  return [who, rec.container, rec.year].filter(Boolean).join(' · ');
+}
+
 /** 문제 없는 항목에서, 대조한 공식 기록을 눈으로 확인할 수 있게 */
 function recordBlock(csl) {
   const box = el('div', 'fld');
   box.append(el('div', 'fld-k', t().record));
   const v = el('div', 'fld-v');
   v.append(el('div', 'cand-t', csl.title));
-  const byline = csl.authors.slice(0, 4).join(', ') + (csl.authors.length > 4 ? ' +' : '');
-  v.append(el('div', 'cand-s', `${byline} · ${csl.container || '—'} · ${csl.year || '—'}`));
+  const by = bylineOf(csl);
+  if (by) v.append(el('div', 'cand-s', by));
   box.append(v);
   return box;
 }
@@ -505,9 +516,9 @@ function candidateBlock(f) {
   box.append(el('div', 'fld-k', t().src[f.source] || t().fCrossref));
   const v = el('div', 'fld-v');
   v.append(el('div', 'cand-t', f.title));
-  const byline = f.authors.slice(0, 4).join(', ') + (f.authors.length > 4 ? ' +' : '');
-  v.append(el('div', 'cand-s', `${byline} · ${f.container || '—'} · ${f.year || '—'}`),
-    scoreRow(f.score));
+  const by = bylineOf(f);
+  if (by) v.append(el('div', 'cand-s', by));
+  v.append(scoreRow(f.score));
   box.append(v);
   return box;
 }
