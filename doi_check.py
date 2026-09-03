@@ -25,6 +25,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import unicodedata
 import urllib.error
@@ -243,6 +244,34 @@ def extract_doi(entry: str) -> str | None:
 # 3. doi.org 조회
 # --------------------------------------------------------------------------
 
+# Crossref 가 응답 헤더로 알려주는 상한 (2026-09 실측):
+#   검색  /works?query...        공개 1 req/s · polite(mailto) 3 req/s
+#   DOI   /works/{doi}/transform 공개 5 req/s
+_RATE_DOI = 5.0
+_RATE_SEARCH = 3.0 if MAILTO else 1.0
+
+
+class _Limiter:
+    """초당 n 건을 넘지 않도록 호출 간격을 벌린다 (스레드 공용)."""
+
+    def __init__(self, per_second: float):
+        self._gap = 1.0 / per_second
+        self._lock = threading.Lock()
+        self._next = 0.0
+
+    def wait(self) -> None:
+        with self._lock:
+            now = time.monotonic()
+            at = max(now, self._next)
+            self._next = at + self._gap
+        if at > now:
+            time.sleep(at - now)
+
+
+_gate_doi = _Limiter(_RATE_DOI)
+_gate_search = _Limiter(_RATE_SEARCH)
+
+
 def _cache_path(doi: str, kind: str) -> str:
     h = hashlib.sha1(f"{kind}:{doi}".encode()).hexdigest()[:20]
     return os.path.join(CACHE_DIR, f"{h}.{kind}")
@@ -274,6 +303,7 @@ def fetch(doi: str, kind: str, use_cache: bool = True) -> tuple[int, str]:
 
     url = "https://doi.org/" + urllib.parse.quote(doi, safe="/:")
     for attempt in range(4):
+        _gate_doi.wait()
         status, body = _http_get(url, accept)
         if status == 200:
             os.makedirs(CACHE_DIR, exist_ok=True)
@@ -590,6 +620,7 @@ def suggest_doi(entry: str) -> dict | None:
         "select": "DOI,title,author,issued,container-title",
         **({"mailto": MAILTO} if MAILTO else {}),
     })
+    _gate_search.wait()
     status, body = _http_get("https://api.crossref.org/works?" + q, "application/json")
     if status != 200:
         return None
@@ -634,6 +665,7 @@ def crossref_search(entry: str, rows: int = 3, use_cache: bool = True) -> tuple[
     url = "https://api.crossref.org/works?" + urllib.parse.urlencode(params)
 
     for attempt in range(4):
+        _gate_search.wait()
         status, body = _http_get(url, "application/json")
         if status == 200:
             try:

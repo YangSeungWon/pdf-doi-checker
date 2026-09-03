@@ -574,10 +574,7 @@ $('#reset').addEventListener('click', () => {
   $('#filename').textContent = '';
   $('#run').disabled = true;
   fileInput.value = '';
-  for (const id of ['#summary', '#results', '#exports', '#debug']) {
-    const n = $(id);
-    if (n.tagName === 'SECTION' || n.tagName === 'DIV' || n.tagName === 'DETAILS') n.hidden = true;
-  }
+  for (const id of ['#summary', '#exports', '#debug']) $(id).hidden = true;
   $('#results').innerHTML = '';
   setStatus('', null);
   window.scrollTo({ top: 0, behavior: 'smooth' });

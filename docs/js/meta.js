@@ -11,6 +11,30 @@ const ACCEPT = {
 
 const cache = new Map();
 
+// Crossref 가 응답 헤더로 알려주는 상한 (2026-09 실측):
+//   검색  /works?query...        공개 1 req/s · polite(mailto) 3 req/s
+//   DOI   /works/{doi}/transform 공개 5 req/s
+// 이 헤더는 CORS 로 노출되지 않아 브라우저가 읽을 수 없으므로 값을 박아 둔다.
+const RATE = { doi: 5, search: 1, searchPolite: 3 };
+
+/** 초당 n 건을 넘지 않도록 호출 간격을 벌린다 */
+function limiter(perSecond) {
+  const gap = 1000 / perSecond;
+  let next = 0;
+  return async () => {
+    const now = Date.now();
+    const at = Math.max(now, next);
+    next = at + gap;
+    if (at > now) await new Promise(r => setTimeout(r, at - now));
+  };
+}
+
+const gate = {
+  doi: limiter(RATE.doi),
+  search: limiter(RATE.search),
+  searchPolite: limiter(RATE.searchPolite),
+};
+
 export function clearCache() { cache.clear(); }
 export function cacheSize() { return cache.size; }
 
@@ -32,6 +56,7 @@ export async function fetchDoi(doi, kind = 'csl') {
 
   const url = 'https://doi.org/' + encodeURI(doi);
   const result = await withRetry(async () => {
+    await gate.doi();
     try {
       const res = await fetch(url, { headers: { Accept: ACCEPT[kind] }, redirect: 'follow' });
       return { ok: res.ok, status: res.status, body: res.ok ? await res.text() : '' };
@@ -58,7 +83,9 @@ export async function crossrefSearch(entry, { rows = 3, mailto = '' } = {}) {
   const params = new URLSearchParams({ 'query.bibliographic': query, rows: String(rows), select: SELECT });
   if (mailto) params.set('mailto', mailto);
 
+  const limit = mailto ? gate.searchPolite : gate.search;
   const res = await withRetry(async () => {
+    await limit();
     try {
       const r = await fetch('https://api.crossref.org/works?' + params, {
         headers: { Accept: 'application/json' },

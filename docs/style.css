@@ -23,6 +23,9 @@
 }
 
 * { box-sizing: border-box; }
+
+/* display 를 지정한 규칙이 hidden 속성을 덮어쓰지 않도록 */
+[hidden] { display: none !important; }
 body {
   margin: 0;
   padding: 2.5rem 1.25rem 5rem;
