@@ -63,12 +63,27 @@ export function cslYear(c) {
   return m ? m[1] : null;
 }
 
+const VENUE_KEYS = ['container-title', 'event-title', 'event', 'collection-title', 'publisher'];
+
 export function cslContainer(c) {
-  for (const k of ['container-title', 'event-title', 'event', 'publisher']) {
+  for (const k of VENUE_KEYS) {
     const v = clean(first(c[k]));
     if (v) return v;
   }
   return '';
+}
+
+/**
+ * 게재처 후보 전부. Springer LNCS 처럼 container-title 은 총서명이고
+ * 참고문헌에는 권 제목이 적히는 경우가 있어, 하나라도 맞으면 통과시킨다.
+ */
+export function cslVenues(c) {
+  const out = [];
+  for (const k of VENUE_KEYS) {
+    const v = clean(first(c[k]));
+    if (v) out.push(v);
+  }
+  return out;
 }
 
 // --- 게재처 / 쪽수: 표기 관행 때문에 완화된 규칙 --------------------------
@@ -190,9 +205,11 @@ export function compare(entry, csl) {
     });
   }
 
-  // 게재처
+  // 게재처 — 판단은 대표 이름으로 하되, 후보 중 하나라도 맞으면 통과.
+  // LNCS 처럼 container-title 이 총서명이고 참고문헌엔 권 제목이 적힌 경우를 위한 것.
   const venue = cslContainer(csl);
-  if (venue && norm(venue).length > 8 && !venueMatches(entry, venue)) {
+  if (venue && norm(venue).length > 8
+      && !cslVenues(csl).some(v => venueMatches(entry, v))) {
     add('venue', venueGuess(rest, venue), venue, { code: 'venueMismatch' });
   }
 

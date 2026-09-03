@@ -108,12 +108,34 @@ function opcodes(a, b) {
     if (i < bi && j < bj) ops.push(['replace', i, bi, j, bj]);
     else if (i < bi) ops.push(['delete', i, bi, j, bj]);
     else if (j < bj) ops.push(['insert', i, bi, j, bj]);
-    i = bi + size; j = bj + size;
+    if (size) ops.push(['equal', bi, bi + size, bj, bj + size]);
+    i = bi + size;
+    j = bj + size;
   }
   if (i < a.length && j < b.length) ops.push(['replace', i, a.length, j, b.length]);
   else if (i < a.length) ops.push(['delete', i, a.length, j, b.length]);
   else if (j < b.length) ops.push(['insert', i, a.length, j, b.length]);
   return ops;
+}
+
+/**
+ * 두 문자열을 나란히 보여주기 위한 단어 조각.
+ * x:true 인 조각이 서로 다른 부분이다.
+ * @returns {{left: {t: string, x?: boolean}[], right: {t: string, x?: boolean}[]}}
+ */
+export function wordSpans(a, b) {
+  const A = clean(a).split(/\s+/).filter(Boolean);
+  const B = clean(b).split(/\s+/).filter(Boolean);
+  const left = [], right = [];
+  for (const [tag, i1, i2, j1, j2] of
+    opcodes(A.map(w => w.toLowerCase()), B.map(w => w.toLowerCase()))) {
+    const l = A.slice(i1, i2).join(' ');
+    const r = B.slice(j1, j2).join(' ');
+    const changed = tag !== 'equal';
+    if (l) left.push(changed ? { t: l, x: true } : { t: l });
+    if (r) right.push(changed ? { t: r, x: true } : { t: r });
+  }
+  return { left, right };
 }
 
 /** 두 문자열의 단어 단위 차이. 표시 문구는 UI 에서 붙인다(다국어). */
@@ -122,6 +144,7 @@ export function wordDiff(pdfStr, doiStr) {
   const b = clean(doiStr).split(/\s+/).filter(Boolean);
   const ops = [];
   for (const [tag, i1, i2, j1, j2] of opcodes(a.map(w => w.toLowerCase()), b.map(w => w.toLowerCase()))) {
+    if (tag === 'equal') continue;
     ops.push({ tag, left: a.slice(i1, i2).join(' '), right: b.slice(j1, j2).join(' ') });
     if (ops.length >= 6) break;
   }

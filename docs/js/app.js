@@ -3,7 +3,7 @@ import { extractText } from './pdftext.js';
 import { sliceReferences, splitEntries, extractDoi } from './refs.js';
 import { fetchDoi, crossrefSearch, pool, clearCache } from './meta.js';
 import { compare, scoreCandidate, cslTitle, cslAuthors, cslYear, cslContainer } from './compare.js';
-import { clean, shorten } from './text.js';
+import { clean, shorten, wordSpans } from './text.js';
 import { t, getLang, setLang, LANGS } from './i18n.js';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc =
@@ -13,7 +13,10 @@ pdfjsLib.GlobalWorkerOptions.workerSrc =
 const WEBISH_RE =
   /\bretrieved\b[\s\S]{0,40}\bfrom\b\s*https?:\/\/|^\s*https?:\/\/|\baccessed\b[\s\S]{0,20}\d{4}/i;
 
-const ICON = { error: '✕', warn: '!', ok: '✓', sure: '✓', likely: '?' };
+const ICON = {
+  error: '✕', warn: '!', match: '✓',
+  found: '✓', likely: '?', none: '—', web: '🔗', fail: '⚠',
+};
 const LANG_NAME = { en: 'EN', ko: '한국어' };
 
 const $ = s => document.querySelector(s);
@@ -38,6 +41,9 @@ function applyStatic() {
     const v = t()[n.dataset.i18n];
     if (typeof v === 'string') n.textContent = v;
   }
+  for (const n of document.querySelectorAll('[data-i18n-title]')) {
+    n.title = t()[n.dataset.i18nTitle] || '';
+  }
   const box = $('#lang');
   box.innerHTML = '';
   for (const l of LANGS) {
@@ -46,8 +52,7 @@ function applyStatic() {
     b.onclick = () => { setLang(l); applyStatic(); if (report) render(); };
     box.append(b);
   }
-  if (busy) return;
-  setStatus(report ? t().done : picked ? t().ready : t().idle, null);
+  if (!busy) setStatus('', null);
 }
 
 // ---------------------------------------------------------------------------
@@ -63,17 +68,14 @@ function setStatus(msg, pct) {
 async function analyze(file) {
   if (busy) return;
   busy = true;
+  filter = null;
   $('#run').disabled = true;
   $('#results').innerHTML = '';
   $('#summary').hidden = true;
   $('#exports').hidden = true;
 
   try {
-    const opts = {
-      findMissing: $('#opt-find-missing').checked,
-      mailto: $('#opt-mailto').value.trim(),
-      workers: Math.max(1, Math.min(12, +$('#opt-workers').value || 6)),
-    };
+    const opts = { findMissing: true, mailto: '', workers: 6 };
 
     setStatus(`${t().reading} ${file.name}`, 0);
     const buf = await file.arrayBuffer();
@@ -125,31 +127,24 @@ async function analyze(file) {
     }, (d, n) => setStatus(`${t().querying} ${d}/${n}`, 0.25 + (d / n) * p1));
 
     let missing = withoutDoi.map(x => ({ ...x, found: null, skipped: null }));
-    if (opts.findMissing && withoutDoi.length) {
-      setStatus(`${t().searching} 0/${withoutDoi.length}`, 0.6);
-      // 검색은 요청 수가 많아 동시 실행을 더 낮춘다 (429 방지)
-      missing = await pool(withoutDoi, Math.min(opts.workers, 4), async item => {
-        if (WEBISH_RE.test(item.entry)) return { ...item, found: null, skipped: 'web' };
-        const search = await crossrefSearch(item.entry, { rows: 3, mailto: opts.mailto });
-        if (!search.ok) return { ...item, found: null, skipped: 'error' };
-        let best = null;
-        for (const cand of search.items) {
-          const score = scoreCandidate(item.entry, cand);
-          if (score.level === 'none') continue;
-          if (!best || score.titleRatio > best.score.titleRatio) {
-            best = {
-              doi: cand.DOI || '', title: cslTitle(cand), authors: cslAuthors(cand),
-              year: cslYear(cand), container: cslContainer(cand), score,
-            };
-          }
-          if (score.level === 'high') break;
-        }
-        return { ...item, found: best, skipped: null };
-      }, (d, n) => setStatus(`${t().searching} ${d}/${n}`, 0.6 + (d / n) * 0.4));
+    if (opts.findMissing) {
+      // 해석되지 않는 DOI 도 올바른 DOI 후보를 찾아준다
+      const broken = checked.filter(r => r.status !== 200);
+      const targets = [...withoutDoi, ...broken];
+      if (targets.length) {
+        setStatus(`${t().searching} 0/${targets.length}`, 0.6);
+        // 검색은 요청 수가 많아 동시 실행을 더 낮춘다 (429 방지)
+        const searched = await pool(targets, Math.min(opts.workers, 4),
+          item => searchOne(item, opts.mailto),
+          (d, n) => setStatus(`${t().searching} ${d}/${n}`, 0.6 + (d / n) * 0.4));
+        missing = searched.slice(0, withoutDoi.length);
+        searched.slice(withoutDoi.length).forEach((r, i) => { broken[i].found = r.found; });
+      }
     }
 
     report = { file: file.name, doc, entries, checked, withoutDoi: missing, refsText };
-    setStatus(t().done, null);
+    setStatus('', null);
+    showFilebar(file.name);
     render();
     renderDebug();
   } catch (err) {
@@ -161,111 +156,309 @@ async function analyze(file) {
   }
 }
 
+/** 참고문헌 원문으로 Crossref 에서 올바른 문헌을 찾아본다 */
+async function searchOne(item, mailto) {
+  if (WEBISH_RE.test(item.entry)) return { ...item, found: null, skipped: 'web' };
+  const search = await crossrefSearch(item.entry, { rows: 3, mailto });
+  if (!search.ok) return { ...item, found: null, skipped: 'error' };
+  let best = null;
+  for (const cand of search.items) {
+    const score = scoreCandidate(item.entry, cand);
+    if (score.level === 'none') continue;
+    if (!best || score.titleRatio > best.score.titleRatio) {
+      best = {
+        doi: cand.DOI || '', title: cslTitle(cand), authors: cslAuthors(cand),
+        year: cslYear(cand), container: cslContainer(cand), score,
+      };
+    }
+    if (score.level === 'high') break;
+  }
+  return { ...item, found: best, skipped: null };
+}
+
 // ---------------------------------------------------------------------------
 // 표시
 // ---------------------------------------------------------------------------
 
-function tile(label, value, cls) {
-  const n = el('div', 'tile' + (cls ? ' ' + cls : ''));
-  n.append(el('div', 'tile-v', String(value)), el('div', 'tile-l', label));
-  return n;
-}
+let filter = null;                 // 선택된 칩 (null 이면 기본 화면)
 
-function badge(kind, text) {
-  const b = el('span', 'badge');
-  b.append(el('span', null, ICON[kind]), el('span', null, text));
-  b.firstChild.setAttribute('aria-hidden', 'true');
-  return b;
-}
-
-function renderNote(note) {
-  if (!note) return '';
-  const N = t().note;
-  switch (note.code) {
-    case 'diff':
-      return note.ops.map(o =>
-        o.tag === 'replace' ? `"${o.left}" → "${o.right}"`
-          : o.tag === 'delete' ? `${t().diff.only}: "${o.left}"`
-            : `${t().diff.doiOnly}: "${o.right}"`).join('; ');
-    case 'missingAuthors': return N.missingAuthors(note.names, note.extra);
-    case 'authorCount': return N.authorCount(note.a, note.b);
-    default: return N[note.code] || '';
+/** 항목을 카테고리 하나로 분류한다 */
+function bucketOf(r, kind) {
+  if (kind === 'doi') {
+    if (r.issues.some(i => i.severity === 'error')) return 'error';
+    return r.issues.length ? 'warn' : 'match';
   }
+  if (r.skipped === 'web') return 'web';
+  if (r.skipped === 'error') return 'fail';
+  if (!r.found) return 'none';
+  return r.found.score.level === 'high' ? 'found' : 'likely';
+}
+
+const DOI_KEYS = ['error', 'warn', 'match'];
+const NODOI_KEYS = ['found', 'likely', 'none', 'web', 'fail'];
+
+function counted(list, kind, keys) {
+  const c = Object.fromEntries(keys.map(k => [k, 0]));
+  for (const r of list) c[bucketOf(r, kind)]++;
+  return c;
+}
+
+// ---------------------------------------------------------------------------
+// 요약 — 69 = 56 + 13 이라는 갈래가 보여야 한다
+// ---------------------------------------------------------------------------
+
+function group(count, label, sub, keys, counts) {
+  const g = el('section', 'group');
+  const h = el('div', 'group-h');
+  h.append(el('b', 'g-n', String(count)), el('span', 'g-l', label), el('span', 'g-s', sub));
+  g.append(h);
+
+  const live = keys.filter(k => counts[k]);     // 0 인 갈래는 아예 내보이지 않는다
+  const bar = el('div', 'bar');
+  for (const k of live) {
+    const seg = el('span', `seg ${k}`, String(counts[k]));
+    seg.style.flexGrow = String(counts[k]);
+    seg.title = `${t().k[k]} — ${t().tip[k]}`;
+    seg.onclick = () => setFilter(filter === k ? null : k);
+    bar.append(seg);
+  }
+  if (live.length) g.append(bar);
+
+  const legend = el('div', 'legend');
+  for (const k of live) {
+    const chip = el('button', `chip ${k}${filter === k ? ' on' : ''}`);
+    chip.title = t().tip[k];
+    chip.append(el('span', 'chip-i', ICON[k] ?? '·'), el('span', null, t().k[k]),
+      el('b', null, String(counts[k])));
+    chip.firstChild.setAttribute('aria-hidden', 'true');
+    chip.onclick = () => setFilter(filter === k ? null : k);
+    legend.append(chip);
+  }
+  g.append(legend);
+  return g;
+}
+
+function setFilter(k) {
+  filter = k;
+  render();
+  $('#results').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+/** "3개 항목이 DOI 기록과 다릅니다." 같은 한 줄 요약 */
+function headline(cDoi, cNo, total) {
+  const T = t();
+  const p = el('p', 'headline');
+  const parts = [
+    { n: cDoi.error + cDoi.warn, cls: cDoi.error ? 'error' : 'warn', text: T.hl.problem },
+    { n: cNo.likely + cNo.none + cNo.fail, cls: 'none', text: T.hl.unverified },
+    { n: cNo.found, cls: 'found', text: T.hl.found },
+  ].filter(x => x.n);
+
+  if (!parts.length) {
+    p.append(el('span', 'hl-ok', `${ICON.match} ${T.hlAllOk(total)}`));
+    return p;
+  }
+  parts.forEach((x, i) => {
+    if (i) p.append(document.createTextNode(' '));
+    p.append(el('b', `hl-n ${x.cls}`, String(x.n)));
+    p.append(document.createTextNode(T.hlSpace + x.text));
+  });
+  return p;
+}
+
+function heading(text, n, sub) {
+  const h = el('h2');
+  h.append(el('span', 'h-t', text), el('span', 'h-n', String(n)), el('span', 'h-s', sub));
+  return h;
+}
+
+const sorted = list => [...list].sort((a, b) => (+a.label || 0) - (+b.label || 0));
+
+/** 검사 대상 전부를 참고문헌 번호 순서로 (문제 있는 것도, 없는 것도) */
+function allRefs() {
+  const rows = [
+    ...report.checked.map(r => ({ r, src: 'doi', kind: bucketOf(r, 'doi') })),
+    ...report.withoutDoi.map(r => ({ r, src: 'nodoi', kind: bucketOf(r, 'nodoi') })),
+  ];
+  return rows.sort((a, b) => (+a.r.label || 0) - (+b.r.label || 0));
 }
 
 function render() {
   const { checked, withoutDoi, entries } = report;
   const T = t();
-  const errorsOnly = $('#opt-errors-only').checked;
-  const findMissing = $('#opt-find-missing').checked;
-
-  const bad = checked.filter(r => r.issues.length);
-  const errs = checked.filter(r => r.issues.some(i => i.severity === 'error'));
-  const hi = withoutDoi.filter(r => r.found?.score.level === 'high');
-  const mid = withoutDoi.filter(r => r.found?.score.level === 'medium');
-  const web = withoutDoi.filter(r => r.skipped === 'web');
-  const failed = withoutDoi.filter(r => r.skipped === 'error');
+  const cDoi = counted(checked, 'doi', DOI_KEYS);
+  const cNo = counted(withoutDoi, 'nodoi', NODOI_KEYS);
 
   const sum = $('#summary');
   sum.innerHTML = '';
   sum.hidden = false;
-  sum.append(
-    tile(T.tRefs, entries.length),
-    tile(T.tChecked, checked.length),
-    tile(T.tErrors, errs.length, 'err'),
-    tile(T.tWarns, bad.length - errs.length, 'warn'),
-    tile(T.tOk, checked.length - bad.length, 'ok'),
-  );
-  if (findMissing) {
-    sum.append(
-      tile(T.tFound, hi.length, 'ok'),
-      tile(T.tLikely, mid.length, 'warn'),
-      tile(T.tNotFound, withoutDoi.length - hi.length - mid.length - web.length - failed.length),
-    );
-    if (failed.length) sum.append(tile(T.tFailed, failed.length, 'err'));
-  }
+  const total = el('div', 'sum-total');
+  total.append(el('b', null, String(entries.length)), el('span', null, T.tRefs));
+  sum.append(total, group(checked.length, T.gDoi, T.gDoiSub, DOI_KEYS, cDoi));
+  if (withoutDoi.length) sum.append(group(withoutDoi.length, T.gNoDoi, T.gNoDoiSub, NODOI_KEYS, cNo));
 
   const out = $('#results');
   out.innerHTML = '';
+  out.append(headline(cDoi, cNo, entries.length));
 
-  const shown = checked
-    .filter(r => (errorsOnly ? r.issues.some(i => i.severity === 'error') : r.issues.length)
-      || $('#opt-show-ok').checked)
-    .sort((a, b) => (+a.label || 0) - (+b.label || 0));
-
-  if (shown.length) {
-    out.append(el('h2', null, `${T.hMismatch} (${shown.length})`));
-    for (const r of shown) out.append(resultCard(r, errorsOnly));
-  } else if (checked.length) {
-    out.append(el('p', 'empty', `${ICON.ok} ${T.allOk}`));
+  let rows = allRefs();
+  if (filter) {
+    rows = rows.filter(x => x.kind === filter);
+    const clear = el('button', 'ghost clear');
+    clear.append(el('span', null, '✕'), el('span', null, T.clearFilter));
+    clear.onclick = () => setFilter(null);
+    const head = el('div', 'filter-h');
+    head.append(heading(T.k[filter], rows.length, T.tip[filter]), clear);
+    out.append(head);
   }
 
-  if (failed.length) {
-    out.append(el('p', 'empty', T.searchFailed(failed.length)));
-  }
-
-  if (findMissing && (hi.length || mid.length)) {
-    out.append(el('h2', null, `${T.hFound} (${hi.length + mid.length})`));
-    for (const r of [...hi, ...mid].sort((a, b) => (+a.label || 0) - (+b.label || 0))) {
-      out.append(foundCard(r));
-    }
-  }
+  const list = el('div', 'reflist');
+  for (const x of rows) list.append(refItem(x));
+  out.append(list);
   $('#exports').hidden = false;
 }
 
-function cardHead(kind, badgeText, label, doi) {
-  const head = el('header', 'card-h');
-  head.append(badge(kind, badgeText), el('span', 'label', `[${label}]`));
+// ---------------------------------------------------------------------------
+// 목록 — 참고문헌 번호를 거터에 두고, 비교는 좌우 diff 로 보여준다
+// ---------------------------------------------------------------------------
+
+const CLEAN = ['match', 'found', 'web'];
+
+/** 참고문헌 한 건. 문제 없는 건 접어둔다. */
+function refItem({ r, src, kind }) {
+  const T = t();
+  const item = el('details', `ref ${kind}`);
+  if (!CLEAN.includes(kind) || filter) item.open = true;
+
+  const sum = el('summary');
+  const gut = el('span', 'ref-n');
+  const st = el('span', `st ${kind}`, ICON[kind] ?? '·');
+  st.title = `${T.k[kind]} — ${T.tip[kind]}`;
+  gut.append(st, el('b', null, r.label));
+  sum.append(gut, el('span', 'ref-sum', shorten(r.entry, 150)));
+  item.append(sum);
+
+  const body = el('div', 'ref-b');
+  const doi = src === 'doi' ? r.doi : r.found?.doi;
+  if (doi) body.append(doiLink(doi));
+  body.append(el('p', 'src', r.entry));
+
+  if (src === 'doi') {
+    for (const i of r.issues) body.append(fieldBlock(i));
+    if (kind === 'match' && r.csl) body.append(recordBlock(r.csl));
+    if (r.found) body.append(suggestBlock(r.found));
+    else if (r.issues.length && r.csl) body.append(bibButton(r.doi));
+  } else if (r.found) {
+    body.append(candidateBlock(r.found));
+    body.append(bibButton(r.found.doi));
+  }
+  item.append(body);
+  return item;
+}
+
+function doiLink(doi) {
   const a = el('a', 'doi', doi);
   a.href = 'https://doi.org/' + doi;
   a.target = '_blank';
   a.rel = 'noopener';
-  head.append(a);
-  return head;
+  return a;
+}
+
+/** 문제 없는 항목에서, 대조한 공식 기록을 눈으로 확인할 수 있게 */
+function recordBlock(csl) {
+  const box = el('div', 'fld');
+  box.append(el('div', 'fld-k', t().record));
+  const v = el('div', 'fld-v');
+  v.append(el('div', 'cand-t', csl.title));
+  const byline = csl.authors.slice(0, 4).join(', ') + (csl.authors.length > 4 ? ' +' : '');
+  v.append(el('div', 'cand-s', `${byline} · ${csl.container || '—'} · ${csl.year || '—'}`));
+  box.append(v);
+  return box;
+}
+
+function candidateBlock(f) {
+  const box = el('div', 'fld');
+  box.append(el('div', 'fld-k', t().fCrossref));
+  const v = el('div', 'fld-v');
+  v.append(el('div', 'cand-t', f.title));
+  const byline = f.authors.slice(0, 4).join(', ') + (f.authors.length > 4 ? ' +' : '');
+  v.append(el('div', 'cand-s', `${byline} · ${f.container || '—'} · ${f.year || '—'}`),
+    scoreRow(f.score));
+  box.append(v);
+  return box;
+}
+
+function side(cls, key, spans, raw) {
+  const r = el('div', `side ${cls}`);
+  r.append(el('span', 'side-k', key));
+  const v = el('span', 'side-t');
+  if (!raw) v.append(el('i', 'muted', t().missing));
+  else {
+    spans.forEach((sp, i) => {
+      if (i) v.append(document.createTextNode(' '));
+      v.append(sp.x ? el('mark', null, sp.t) : document.createTextNode(sp.t));
+    });
+  }
+  r.append(v);
+  return r;
+}
+
+/** 필드 하나의 비교. 다른 낱말에만 표시가 붙는다. */
+function fieldBlock(i) {
+  const T = t();
+  const box = el('div', `fld ${i.severity}`);
+  box.append(el('div', 'fld-k', T.field[i.field] || i.field));
+  const v = el('div', 'fld-v');
+  const { left, right } = wordSpans(i.pdf || '', i.doi || '');
+  v.append(side('pdf', T.fPdf, left, i.pdf), side('doi', T.fDoi, right, i.doi));
+  const note = renderNote(i.note);
+  if (note) v.append(el('div', 'note', note));
+  box.append(v);
+  return box;
+}
+
+function renderNote(note) {
+  if (!note || note.code === 'diff') return '';       // 낱말 표시가 대신한다
+  const N = t().note;
+  if (note.code === 'missingAuthors') return N.missingAuthors(note.names, note.extra);
+  if (note.code === 'authorCount') return N.authorCount(note.a, note.b);
+  return N[note.code] || '';
+}
+
+/** 해석되지 않는 DOI 에 대해 Crossref 가 제안하는 올바른 문헌 */
+function suggestBlock(f) {
+  const wrap = el('div');
+  const box = el('div', 'fld suggest');
+  box.append(el('div', 'fld-k', t().suggest));
+  const v = el('div', 'fld-v');
+  v.append(doiLink(f.doi), el('div', 'cand-t', f.title), scoreRow(f.score));
+  box.append(v);
+  wrap.append(box, bibButton(f.doi));
+  return wrap;
+}
+
+/** 매칭 근거를 지표 세 개로 나눠 보여준다 */
+function scoreRow(sc) {
+  const T = t();
+  const box = el('div', 'metrics');
+  const grade = (v, ok, warn) => (v >= ok ? 'ok' : v >= warn ? 'warn' : 'low');
+  box.append(metric(T.field.title, sc.titleRatio.toFixed(3), '', grade(sc.titleRatio, 0.95, 0.85)));
+  box.append(metric(T.field.authors, `${Math.round(sc.authorHit * 100)}%`,
+    T.note.authorsN(sc.nAuthors), grade(sc.authorHit, 1, 0.5)));
+  box.append(metric(T.field.year, T.note.year[sc.year], '',
+    sc.year === 'match' ? 'ok' : sc.year === 'mismatch' ? 'low' : 'warn'));
+  return box;
+}
+
+function metric(label, value, sub, cls) {
+  const m = el('span', `metric ${cls}`);
+  m.append(el('span', 'm-l', label), el('b', null, value));
+  if (sub) m.append(el('small', null, sub));
+  return m;
 }
 
 function bibButton(doi) {
-  const btn = el('button', 'ghost');
+  const btn = el('button', 'ghost bib-btn');
   btn.append(el('span', null, '{ }'), el('span', null, t().bibtex));
   btn.onclick = async () => {
     btn.disabled = true;
@@ -274,57 +467,6 @@ function bibButton(doi) {
     btn.replaceWith(bibBlock(res.ok ? res.body.trim() : `${t().fetchFail} (HTTP ${res.status})`));
   };
   return btn;
-}
-
-function resultCard(r, errorsOnly) {
-  const T = t();
-  const issues = errorsOnly ? r.issues.filter(i => i.severity === 'error') : r.issues;
-  const kind = issues.some(i => i.severity === 'error') ? 'error' : issues.length ? 'warn' : 'ok';
-  const card = el('article', `card ${kind}`);
-  card.append(cardHead(kind, kind === 'error' ? T.badgeError : kind === 'warn' ? T.badgeWarn : T.badgeOk,
-    r.label, r.doi));
-  card.append(el('p', 'entry', r.entry));
-
-  for (const i of issues) {
-    const row = el('div', `issue ${i.severity}`);
-    const f = el('div', 'issue-f');
-    f.append(el('span', null, ICON[i.severity]), el('span', null, T.field[i.field] || i.field));
-    f.firstChild.setAttribute('aria-hidden', 'true');
-    row.append(f);
-    const body = el('div', 'issue-b');
-    body.append(kv(T.fPdf, i.pdf || T.missing), kv(T.fDoi, i.doi));
-    const note = renderNote(i.note);
-    if (note) body.append(el('div', 'note', note));
-    row.append(body);
-    card.append(row);
-  }
-  if (issues.length && r.csl) card.append(bibButton(r.doi));
-  return card;
-}
-
-function foundCard(r) {
-  const T = t();
-  const f = r.found;
-  const high = f.score.level === 'high';
-  const card = el('article', `card ${high ? 'ok' : 'warn'}`);
-  card.append(cardHead(high ? 'sure' : 'likely', high ? T.badgeSure : T.badgeLikely, r.label, f.doi));
-  card.append(el('p', 'entry', r.entry));
-
-  const body = el('div', 'issue-b');
-  const byline = f.authors.slice(0, 4).join(', ') + (f.authors.length > 4 ? ' +' : '');
-  body.append(kv(T.fCrossref, f.title));
-  body.append(kv('', `${byline} · ${f.container || '—'} · ${f.year || '—'}`));
-  body.append(el('div', 'note', T.note.score(
-    f.score.titleRatio, Math.round(f.score.authorHit * 100), f.score.nAuthors,
-    T.note.year[f.score.year])));
-  card.append(body, bibButton(f.doi));
-  return card;
-}
-
-function kv(k, v) {
-  const n = el('div', 'kv');
-  n.append(el('span', 'k', k), el('span', 'v', v));
-  return n;
 }
 
 function bibBlock(text) {
@@ -389,18 +531,6 @@ async function exportBibtex() {
   btn.disabled = false;
 }
 
-function exportJson() {
-  download(`${baseName()}.doi-check.json`, JSON.stringify({
-    file: report.file,
-    pages: report.doc.pages,
-    totalReferences: report.entries.length,
-    checked: report.checked.map(({ label, doi, entry, status, csl, issues }) =>
-      ({ label, doi, entry, status, csl, issues })),
-    withoutDoi: report.withoutDoi.map(({ label, entry, found, skipped }) =>
-      ({ label, entry, found, skipped })),
-  }, null, 2));
-}
-
 // ---------------------------------------------------------------------------
 // 배선
 // ---------------------------------------------------------------------------
@@ -408,12 +538,18 @@ function exportJson() {
 const drop = $('#drop');
 const fileInput = $('#file');
 
+function showFilebar(name) {
+  $('#fb-name').textContent = name;
+  $('#filebar').hidden = false;
+  $('#pick').hidden = true;
+}
+
 function setFile(f) {
   if (!f || f.type !== 'application/pdf') return setStatus(t().pdfOnly, null);
   picked = f;
   $('#filename').textContent = `${f.name} · ${(f.size / 1048576).toFixed(1)} MB`;
   $('#run').disabled = false;
-  setStatus(t().ready, null);
+  setStatus('', null);
 }
 
 drop.addEventListener('click', () => fileInput.click());
@@ -428,18 +564,25 @@ fileInput.addEventListener('change', () => setFile(fileInput.files[0]));
 drop.addEventListener('drop', e => setFile(e.dataTransfer.files[0]));
 
 $('#run').addEventListener('click', () => picked && analyze(picked));
-$('#opt-errors-only').addEventListener('change', () => report?.entries.length && render());
-$('#opt-show-ok').addEventListener('change', () => report?.entries.length && render());
-$('#dl-json').addEventListener('click', exportJson);
-$('#dl-bib').addEventListener('click', exportBibtex);
-$('#clear-cache').addEventListener('click', e => {
+$('#reset').addEventListener('click', () => {
+  report = null;
+  picked = null;
+  filter = null;
   clearCache();
-  const span = e.currentTarget.lastChild;
-  const orig = span.textContent;
-  span.textContent = '✓';
-  setTimeout(() => (span.textContent = orig), 1200);
+  $('#filebar').hidden = true;
+  $('#pick').hidden = false;
+  $('#filename').textContent = '';
+  $('#run').disabled = true;
+  fileInput.value = '';
+  for (const id of ['#summary', '#results', '#exports', '#debug']) {
+    const n = $(id);
+    if (n.tagName === 'SECTION' || n.tagName === 'DIV' || n.tagName === 'DETAILS') n.hidden = true;
+  }
+  $('#results').innerHTML = '';
+  setStatus('', null);
+  window.scrollTo({ top: 0, behavior: 'smooth' });
 });
-
+$('#dl-bib').addEventListener('click', exportBibtex);
 setLang(getLang());
 applyStatic();
 $('#pdfjs-version').textContent = pdfjsLib.version;
