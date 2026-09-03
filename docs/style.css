@@ -60,9 +60,12 @@ main, .top, .foot { max-width: 64rem; margin-inline: auto; }
   display: flex; flex-direction: column; align-items: center; gap: .4rem;
   transition: border-color .15s, background .15s;
 }
-.drop:hover, .drop:focus-visible, .drop.over {
+.drop:hover, .drop:focus-visible,
+body.dragging .drop {
   border-color: var(--accent); background: var(--ok-bg); outline: none;
 }
+/* 파일을 끌고 오면 어디에 놓아도 받는다는 걸 보여준다 */
+body.dragging { outline: 3px solid var(--accent); outline-offset: -3px; }
 .drop-icon { font-size: 2.6rem; line-height: 1; }
 .drop strong { font-size: 1.25rem; }
 .drop-sub { color: var(--dim); font-size: 1rem; }

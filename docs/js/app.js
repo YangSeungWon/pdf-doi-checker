@@ -712,8 +712,17 @@ function showDropState() {
   $('#pv-pages').textContent = '';
 }
 
+/**
+ * PDF 인지 판정.
+ * File.type 은 믿을 수 없다 — OS 에 MIME 매핑이 없거나 드롭 출처에 따라
+ * 빈 문자열이나 application/octet-stream 으로 오는 일이 흔하다. 확장자도 본다.
+ */
+function isPdf(f) {
+  return !!f && (f.type === 'application/pdf' || /\.pdf$/i.test(f.name || ''));
+}
+
 function setFile(f) {
-  if (!f || f.type !== 'application/pdf') return setStatus(t().pdfOnly);
+  if (!isPdf(f)) return setStatus(t().pdfOnly);
   picked = f;
   $('#filename').textContent = `${f.name} · ${(f.size / 1048576).toFixed(1)} MB`;
   $('#drop').hidden = true;
@@ -727,12 +736,31 @@ drop.addEventListener('click', () => fileInput.click());
 drop.addEventListener('keydown', e => {
   if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fileInput.click(); }
 });
-fileInput.addEventListener('change', () => setFile(fileInput.files[0]));
-['dragenter', 'dragover'].forEach(ev =>
-  drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add('over'); }));
-['dragleave', 'drop'].forEach(ev =>
-  drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove('over'); }));
-drop.addEventListener('drop', e => setFile(e.dataTransfer.files[0]));
+fileInput.addEventListener('change', () => {
+  const f = fileInput.files[0];
+  fileInput.value = '';          // 같은 파일을 다시 골라도 change 가 뜨도록
+  setFile(f);
+});
+
+// 드롭은 창 전체에서 받는다. 드롭존을 살짝 빗나갔다고 브라우저가 PDF 를
+// 열어버리면 사용자에겐 "아무 일도 안 일어난" 것으로 보인다.
+let dragDepth = 0;
+window.addEventListener('dragenter', e => {
+  e.preventDefault();
+  if (++dragDepth === 1) document.body.classList.add('dragging');
+});
+window.addEventListener('dragover', e => { e.preventDefault(); });
+window.addEventListener('dragleave', e => {
+  e.preventDefault();
+  if (--dragDepth <= 0) { dragDepth = 0; document.body.classList.remove('dragging'); }
+});
+window.addEventListener('drop', e => {
+  e.preventDefault();
+  dragDepth = 0;
+  document.body.classList.remove('dragging');
+  const f = e.dataTransfer?.files?.[0];
+  if (f) setFile(f);
+});
 
 $('#run').addEventListener('click', () => picked && analyze(picked));
 $('#change').addEventListener('click', () => {
