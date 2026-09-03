@@ -148,6 +148,48 @@ export async function openAlexSearch(title, { rows = 3, mailto = '' } = {}) {
   return out;
 }
 
+/**
+ * 철회·정정 여부를 한꺼번에 조회한다.
+ * Crossref 는 Retraction Watch 데이터를 updated-by 로 노출한다.
+ * doi.org 의 CSL-JSON 에는 이 정보가 없어 별도로 물어봐야 하지만,
+ * filter=doi:A,doi:B 로 묶을 수 있어 요청 수는 얼마 안 든다.
+ * @returns {Promise<Map<string, object[]>>} 소문자 DOI → updated-by 목록
+ */
+export async function crossrefUpdates(dois, { mailto = '' } = {}) {
+  const out = new Map();
+  const list = [...new Set(dois.map(d => d.toLowerCase()))].filter(d => d && !d.includes(','));
+  const BATCH = 20;
+
+  for (let i = 0; i < list.length; i += BATCH) {
+    const chunk = list.slice(i, i + BATCH);
+    const params = new URLSearchParams({
+      filter: chunk.map(d => 'doi:' + d).join(','),
+      select: 'DOI,updated-by',
+      rows: String(chunk.length),
+    });
+    if (mailto) params.set('mailto', mailto);
+
+    const res = await withRetry(async () => {
+      await (mailto ? gate.searchPolite : gate.search)();
+      try {
+        const r = await fetch('https://api.crossref.org/works?' + params,
+          { headers: { Accept: 'application/json' } });
+        return { ok: r.ok, status: r.status, body: r.ok ? await r.text() : '' };
+      } catch (e) {
+        return { ok: false, status: 0, body: String(e) };
+      }
+    });
+    if (!res.ok) continue;
+    try {
+      for (const it of JSON.parse(res.body).message.items || []) {
+        const ub = it['updated-by'] || [];
+        if (ub.length) out.set(String(it.DOI).toLowerCase(), ub);
+      }
+    } catch { /* 무시 */ }
+  }
+  return out;
+}
+
 /** 동시 실행 수를 제한하며 순서대로 결과를 모은다 */
 export async function pool(items, limit, worker, onDone) {
   const out = new Array(items.length);

@@ -11,6 +11,7 @@ const STR = {
     extracting: 'Extracting text',
     page: 'pages',
     querying: 'Querying doi.org',
+    checkingStatus: 'Checking for retractions',
     searching: 'Searching Crossref',
     noRefs: 'No references found. Check the parsed output below.',
     error: 'Error',
@@ -38,7 +39,7 @@ const STR = {
     clearFilter: 'Show all',
     hlSpace: ' ',
     hl: {
-      problem: 'references disagree with their DOI record.',
+      problem: 'references have a problem.',
       unverified: 'could not be confirmed.',
       found: 'were verified and have a DOI you can add.',
     },
@@ -70,6 +71,7 @@ const STR = {
     field: {
       doi: 'DOI', title: 'Title', authors: 'Authors', year: 'Year',
       venue: 'Venue', volume: 'Volume', issue: 'Issue', pages: 'Pages',
+      status: 'Status',
     },
     note: {
       doi404: 'Not resolvable at doi.org — typo or unregistered.',
@@ -83,6 +85,11 @@ const STR = {
       venueMismatch: 'No match even allowing for abbreviations.',
       authorsN: n => `of ${n}`,
       noAuthors: 'record lists none',
+      retitled: 'The record has a different title — the paper was likely retitled in a later version.',
+      retracted: 'This work has been RETRACTED. Do not cite it as valid.',
+      concern: 'An expression of concern has been issued for this work.',
+      corrected: 'A correction has been issued for this work.',
+      notice: 'Notice',
       year: { match: 'match', near: '±1', unknown: 'unknown', mismatch: 'differs' },
     },
     diff: { only: 'PDF only', doiOnly: 'DOI only' },
@@ -101,6 +108,7 @@ const STR = {
     extracting: '텍스트 추출',
     page: '쪽',
     querying: 'doi.org 조회',
+    checkingStatus: '철회 여부 확인',
     searching: 'Crossref 검색',
     noRefs: '참고문헌을 찾지 못했습니다. 아래 추출 결과를 확인하세요.',
     error: '오류',
@@ -128,7 +136,7 @@ const STR = {
     clearFilter: '전체 보기',
     hlSpace: '',
     hl: {
-      problem: '개 항목이 DOI 기록과 다릅니다.',
+      problem: '개 항목에 문제가 있습니다.',
       unverified: '개는 확인하지 못했습니다.',
       found: '개는 확인됐고 넣을 DOI가 있습니다.',
     },
@@ -160,6 +168,7 @@ const STR = {
     field: {
       doi: 'DOI', title: '제목', authors: '저자', year: '연도',
       venue: '게재처', volume: '권', issue: '호', pages: '쪽수',
+      status: '상태',
     },
     note: {
       doi404: 'doi.org에서 해석되지 않음 — 오타이거나 미등록.',
@@ -173,6 +182,11 @@ const STR = {
       venueMismatch: '축약 표기를 감안해도 일치하지 않음.',
       authorsN: n => `${n}명 기준`,
       noAuthors: '기록에 저자 없음',
+      retitled: '기록의 제목이 다릅니다 — 개정판에서 제목이 바뀐 것으로 보입니다.',
+      retracted: '철회된(retracted) 논문입니다. 유효한 문헌으로 인용하면 안 됩니다.',
+      concern: '우려 표명(expression of concern)이 등록된 논문입니다.',
+      corrected: '정정(correction)이 등록된 논문입니다.',
+      notice: '공지',
       year: { match: '일치', near: '±1', unknown: '알 수 없음', mismatch: '다름' },
     },
     diff: { only: 'PDF에만', doiOnly: 'DOI에만' },

@@ -47,7 +47,13 @@ CACHE_DIR = os.environ.get(
 )
 
 # 필드별 심각도. error = 거의 확실한 오류, warn = 표기 관행 차이일 수 있음
+FIELD_LABEL = {
+    "status": "상태", "doi": "DOI", "title": "제목", "authors": "저자",
+    "year": "연도", "venue": "게재처", "volume": "권", "issue": "호", "pages": "쪽수",
+}
+
 SEVERITY = {
+    "status": "error",
     "doi": "error",
     "title": "error",
     "authors": "error",
@@ -792,19 +798,79 @@ def arxiv_candidate(entry: str, use_cache: bool) -> dict | None:
     except json.JSONDecodeError:
         return None
     sc = score_candidate(entry, csl)
-    if sc["title_ratio"] < 0.85:
+    title_ok = sc["title_ratio"] >= 0.85
+    authors_ok = sc["author_hit"] is not None and sc["author_hit"] >= 0.5
+    if not (title_ok or authors_ok):
         return None
-    # 저자가 어긋나면 '확실' 이 아니라 '추정' 으로 내려 사람이 보고 판단하게 한다
-    strong = sc["title_ratio"] >= 0.95 and (
-        sc["author_hit"] is None or sc["author_hit"] >= 0.5)
+    # 저자가 맞는데 제목이 다르면 개정판에서 제목을 바꾼 경우다.
+    # 버리지 말고 '추정' 으로 올려, 인용한 제목이 낡았다는 걸 알려준다.
+    strong = sc["title_ratio"] >= 0.95 and (sc["author_hit"] is None or authors_ok)
     sc["level"] = "high" if strong else "medium"
     return {
         "doi": doi, "title": csl_title(csl), "authors": csl_authors(csl),
         "year": csl_year(csl), "container": csl_container(csl), "score": sc,
+        "note": "기록의 제목이 다릅니다 — 개정판에서 제목이 바뀐 것으로 보입니다."
+                if (not title_ok and authors_ok) else None,
     }
 
 
 OA_SELECT = "id,doi,title,publication_year,authorships,primary_location"
+
+
+def crossref_updates(dois: list[str]) -> dict[str, list[dict]]:
+    """철회·정정 여부를 한꺼번에 조회한다.
+
+    Crossref 는 Retraction Watch 데이터를 updated-by 로 노출한다. doi.org 의
+    CSL-JSON 에는 없어 따로 물어야 하지만 filter=doi:A,doi:B 로 묶을 수 있다.
+    """
+    out: dict[str, list[dict]] = {}
+    uniq = sorted({d.lower() for d in dois if d and "," not in d})
+    for i in range(0, len(uniq), 20):
+        chunk = uniq[i:i + 20]
+        params = {
+            "filter": ",".join("doi:" + d for d in chunk),
+            "select": "DOI,updated-by",
+            "rows": str(len(chunk)),
+        }
+        if MAILTO:
+            params["mailto"] = MAILTO
+        _gate_search.wait()
+        status, body = _http_get(
+            "https://api.crossref.org/works?" + urllib.parse.urlencode(params),
+            "application/json")
+        if status != 200:
+            continue
+        try:
+            items = json.loads(body)["message"]["items"]
+        except (json.JSONDecodeError, KeyError, TypeError):
+            continue
+        for it in items:
+            ub = it.get("updated-by") or []
+            if ub:
+                out[str(it.get("DOI", "")).lower()] = ub
+    return out
+
+
+STATUS_RULES = [
+    ("retraction", "철회된(retracted) 논문입니다. 유효한 문헌으로 인용하면 안 됩니다.", "error"),
+    ("withdrawal", "철회된(withdrawn) 논문입니다.", "error"),
+    ("removal", "삭제된(removed) 논문입니다.", "error"),
+    ("expression_of_concern", "우려 표명(expression of concern)이 등록된 논문입니다.", "warn"),
+    ("correction", "정정(correction)이 등록된 논문입니다.", "warn"),
+]
+
+
+def status_issue(updates: list[dict] | None) -> dict | None:
+    """Crossref updated-by → 보고할 문제 (없으면 None)."""
+    if not updates:
+        return None
+    kinds = [str(u.get("type", "")).lower() for u in updates]
+    for kind, note, severity in STATUS_RULES:
+        if kind in kinds:
+            notice = updates[kinds.index(kind)].get("DOI", "")
+            return {"field": "status", "severity": severity, "pdf": "",
+                    "doi": notice, "note": note}
+    return None
 
 
 def openalex_to_csl(w: dict) -> dict:
@@ -1027,6 +1093,16 @@ def main() -> int:
             results.append(fut.result())
     results.sort(key=lambda r: (len(r["label"]), r["label"]))
 
+    # 철회·정정된 문헌을 인용하고 있지는 않은지 (Retraction Watch)
+    resolved = [r["doi"] for r in results if r.get("status") == 200]
+    if resolved:
+        print(f"{c.D}철회 여부 확인 중...{c.X}", file=sys.stderr)
+        updates = crossref_updates(resolved)
+        for r in results:
+            issue = status_issue(updates.get(str(r["doi"]).lower()))
+            if issue:
+                r["issues"].insert(0, issue)
+
     n_bad = n_err = 0
     for r in results:
         issues = r.get("issues", [])
@@ -1046,7 +1122,14 @@ def main() -> int:
         print(f"   {c.D}PDF:{c.X} {shorten(r['entry'], 300)}")
         for i in issues:
             col = c.R if i["severity"] == "error" else c.Y
-            print(f"   {col}• {i['field']}{c.X}")
+            label = FIELD_LABEL.get(i["field"], i["field"])
+            print(f"   {col}• {label}{c.X}")
+            if i["field"] == "status":
+                # 좌우 비교가 아니라 한 줄 알림
+                print(f"       {col}{i['note']}{c.X}")
+                if i["doi"]:
+                    print(f"       {c.D}공지: https://doi.org/{i['doi']}{c.X}")
+                continue
             print(f"       PDF : {shorten(i['pdf'], 220) or '(없음)'}")
             print(f"       DOI : {shorten(i['doi'], 220)}")
             if i["note"]:
@@ -1100,6 +1183,8 @@ def main() -> int:
                  else f"{int(sc['author_hit'] * 100)}% ({sc['n_authors']}명 기준)")
             print(f"   {c.D}근거: 제목 유사도 {sc['title_ratio']} · "
                   f"저자 일치 {a} · 연도 {sc['year']}{c.X}")
+            if f.get("note"):
+                print(f"   {c.Y}※ {f['note']}{c.X}")
 
     if args.list_nodoi and without_doi:
         print(f"\n{c.B}DOI가 없어 검사하지 못한 항목 {len(without_doi)}건{c.X}")

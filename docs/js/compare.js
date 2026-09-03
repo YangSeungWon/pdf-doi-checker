@@ -2,9 +2,29 @@
 import { clean, norm, normWords, ratio, wordDiff } from './text.js';
 
 export const SEVERITY = {
+  status: 'error',
   doi: 'error', title: 'error', authors: 'error', year: 'error',
   venue: 'warn', volume: 'warn', issue: 'warn', pages: 'warn',
 };
+
+/** Crossref updated-by → 보고할 문제 (없으면 null) */
+export function statusIssue(updates) {
+  if (!updates?.length) return null;
+  const kinds = updates.map(u => String(u.type || '').toLowerCase());
+  const pick = (k) => updates[kinds.findIndex(x => x === k)];
+  for (const [kind, code, severity] of [
+    ['retraction', 'retracted', 'error'],
+    ['withdrawal', 'retracted', 'error'],
+    ['removal', 'retracted', 'error'],
+    ['expression_of_concern', 'concern', 'warn'],
+    ['correction', 'corrected', 'warn'],
+  ]) {
+    if (kinds.includes(kind)) {
+      return { field: 'status', severity, pdf: '', doi: pick(kind)?.DOI || '', note: { code } };
+    }
+  }
+  return null;
+}
 
 const YEAR_RE = /(?<![0-9])((?:19|20)\d{2})(?![0-9])/;
 // "저자들. 2019. 제목. 게재처 ..." (ACM/APA 계열)

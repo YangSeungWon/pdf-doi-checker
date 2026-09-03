@@ -1,10 +1,12 @@
 import * as pdfjsLib from '../vendor/pdfjs/pdf.min.mjs';
 import { extractText } from './pdftext.js';
 import { sliceReferences, splitEntries, extractDoi } from './refs.js';
-import { fetchDoi, crossrefSearch, openAlexSearch, pool, clearCache } from './meta.js';
+import {
+  fetchDoi, crossrefSearch, openAlexSearch, crossrefUpdates, pool, clearCache,
+} from './meta.js';
 import {
   compare, scoreCandidate, cslTitle, cslAuthors, cslYear, cslContainer,
-  refTitleGuess, openAlexToCsl,
+  refTitleGuess, openAlexToCsl, statusIssue,
 } from './compare.js';
 import { clean, shorten, wordSpans } from './text.js';
 import { t, getLang, setLang, LANGS } from './i18n.js';
@@ -156,6 +158,17 @@ async function analyze(file) {
       };
     }, (d, n) => setProgress(d, total, t().tRefs, `${t().querying} ${d}/${n}`));
 
+    // 철회·정정된 문헌을 인용하고 있지는 않은지 (Retraction Watch)
+    const resolved = checked.filter(r => r.status === 200).map(r => r.doi);
+    if (resolved.length) {
+      setProgress(withDoi.length, entries.length, t().tRefs, t().checkingStatus);
+      const updates = await crossrefUpdates(resolved, { mailto: opts.mailto });
+      for (const r of checked) {
+        const issue = statusIssue(updates.get(String(r.doi).toLowerCase()));
+        if (issue) r.issues = [issue, ...r.issues];
+      }
+    }
+
     let missing = withoutDoi.map(x => ({ ...x, found: null, skipped: null }));
     if (opts.findMissing) {
       // 해석되지 않는 DOI 도 올바른 DOI 후보를 찾아준다
@@ -234,15 +247,18 @@ async function searchOne(item, mailto) {
         try {
           const csl = JSON.parse(res.body);
           const sc = scoreCandidate(item.entry, csl);
-          // ID 가 참고문헌에 직접 적혀 있으니 제목만 맞으면 후보로는 올린다.
-          // 다만 저자가 어긋나면 '확인됨' 이 아니라 '추정' 으로 내려서
-          // 저자 지표를 보고 사람이 판단하게 한다 (기관명 인용 등).
-          if (sc.titleRatio >= 0.85) {
-            const strong = sc.titleRatio >= 0.95
-              && (sc.authorHit === null || sc.authorHit >= 0.5);
+          // ID 가 참고문헌에 직접 적혀 있으므로, 제목이나 저자 중 하나만
+          // 맞아도 같은 글로 본다. 저자가 맞는데 제목이 다르면 개정판에서
+          // 제목을 바꾼 경우다 (arXiv 에서 드물지 않다). 그런 건 버리지 말고
+          // '추정' 으로 올려서, 인용한 제목이 낡았다는 걸 알려줘야 한다.
+          const titleOk = sc.titleRatio >= 0.85;
+          const authorsOk = sc.authorHit !== null && sc.authorHit >= 0.5;
+          if (titleOk || authorsOk) {
+            const strong = sc.titleRatio >= 0.95 && (sc.authorHit === null || authorsOk);
             best = {
               ...candFrom(csl, doi, 'arxiv'),
               score: { ...sc, level: strong ? 'high' : 'medium' },
+              note: !titleOk && authorsOk ? { code: 'retitled' } : null,
             };
           }
         } catch { /* 무시 */ }
@@ -482,7 +498,7 @@ function refItem({ r, src, kind }) {
   body.append(el('p', 'src', r.entry));
 
   if (src === 'doi') {
-    for (const i of r.issues) body.append(fieldBlock(i));
+    for (const i of r.issues) body.append(i.field === 'status' ? statusBlock(i) : fieldBlock(i));
     if (kind === 'match' && r.csl) body.append(recordBlock(r.csl));
     if (r.found) body.append(suggestBlock(r.found));
     else if (r.issues.length && r.csl) body.append(bibButton(r.doi));
@@ -529,6 +545,8 @@ function candidateBlock(f) {
   const by = bylineOf(f);
   if (by) v.append(el('div', 'cand-s', by));
   v.append(scoreRow(f.score));
+  const note = renderNote(f.note);
+  if (note) v.append(el('div', 'note', note));
   box.append(v);
   return box;
 }
@@ -546,6 +564,21 @@ function side(cls, key, spans, raw) {
   }
   r.append(v);
   return r;
+}
+
+/** 철회·정정 같은 상태는 좌우 비교가 아니라 한 줄로 알린다 */
+function statusBlock(i) {
+  const box = el('div', `fld ${i.severity}`);
+  box.append(el('div', 'fld-k', t().field.status));
+  const v = el('div', 'fld-v');
+  v.append(el('div', 'cand-t', renderNote(i.note)));
+  if (i.doi) {
+    const row = el('div', 'cand-s');
+    row.append(el('span', null, `${t().note.notice}: `), doiLink(i.doi));
+    v.append(row);
+  }
+  box.append(v);
+  return box;
 }
 
 /** 필드 하나의 비교. 다른 낱말에만 표시가 붙는다. */
