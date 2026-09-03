@@ -37,8 +37,15 @@
     <button id="reset" class="ghost"><span aria-hidden="true">↻</span> <span data-i18n="newFile"></span></button>
   </div>
 
+  <div id="progress" class="progress" hidden>
+    <div class="pg-main">
+      <b id="pg-n">0</b><span class="pg-slash">/</span><span id="pg-t">0</span>
+      <span id="pg-u" class="pg-u"></span>
+    </div>
+    <div id="pg-sub" class="pg-sub"></div>
+    <div class="pg-track"><div id="bar"></div></div>
+  </div>
   <p id="status" class="status"></p>
-  <div id="progress" class="progress" hidden><div id="bar"></div></div>
 
   <section id="summary" class="summary" hidden></section>
   <section id="results" class="results"></section>

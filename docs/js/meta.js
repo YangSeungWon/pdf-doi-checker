@@ -15,7 +15,8 @@ const cache = new Map();
 //   검색  /works?query...        공개 1 req/s · polite(mailto) 3 req/s
 //   DOI   /works/{doi}/transform 공개 5 req/s
 // 이 헤더는 CORS 로 노출되지 않아 브라우저가 읽을 수 없으므로 값을 박아 둔다.
-const RATE = { doi: 5, search: 1, searchPolite: 3 };
+// OpenAlex 는 10 req/s · 10만/일 을 허용하지만 넉넉히 잡아 둔다.
+const RATE = { doi: 5, search: 1, searchPolite: 3, openalex: 2 };
 
 /** 초당 n 건을 넘지 않도록 호출 간격을 벌린다 */
 function limiter(perSecond) {
@@ -33,6 +34,7 @@ const gate = {
   doi: limiter(RATE.doi),
   search: limiter(RATE.search),
   searchPolite: limiter(RATE.searchPolite),
+  openalex: limiter(RATE.openalex),
 };
 
 export function clearCache() { cache.clear(); }
@@ -102,6 +104,46 @@ export async function crossrefSearch(entry, { rows = 3, mailto = '' } = {}) {
   catch { return { ok: false, status: -1, items: [] }; }
 
   const out = { ok: true, status: 200, items };
+  cache.set(key, out);
+  return out;
+}
+
+const OA_SELECT = 'id,doi,title,publication_year,authorships,primary_location';
+
+/**
+ * OpenAlex 검색. Crossref 가 못 찾는 것 (학술서 챕터, 일부 저널) 을 덮는다.
+ * @returns {Promise<{ok: boolean, items: object[]}>}
+ */
+export async function openAlexSearch(title, { rows = 3, mailto = '' } = {}) {
+  const q = title.replace(/\s+/g, ' ').trim().slice(0, 300);
+  if (!q) return { ok: true, items: [] };
+  const key = `oa:${rows}:${q}`;
+  if (cache.has(key)) return cache.get(key);
+
+  // search= 는 전문(full-text) 검색이라 엉뚱한 걸 물어온다. 제목 인덱스를 쓴다.
+  const params = new URLSearchParams({
+    filter: 'title.search:' + q, per_page: String(rows), select: OA_SELECT,
+  });
+  if (mailto) params.set('mailto', mailto);
+
+  const res = await withRetry(async () => {
+    await gate.openalex();
+    try {
+      const r = await fetch('https://api.openalex.org/works?' + params, {
+        headers: { Accept: 'application/json' },
+      });
+      return { ok: r.ok, status: r.status, body: r.ok ? await r.text() : '' };
+    } catch (e) {
+      return { ok: false, status: 0, body: String(e) };
+    }
+  });
+
+  if (!res.ok) return { ok: false, items: [] };
+  let items = [];
+  try { items = JSON.parse(res.body).results || []; }
+  catch { return { ok: false, items: [] }; }
+
+  const out = { ok: true, items };
   cache.set(key, out);
   return out;
 }

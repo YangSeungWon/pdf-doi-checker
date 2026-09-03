@@ -10,6 +10,30 @@ const YEAR_RE = /(?<![0-9])((?:19|20)\d{2})(?![0-9])/;
 // "저자들. 2019. 제목. 게재처 ..." (ACM/APA 계열)
 const AUTHORS_YEAR_RE = /^([\s\S]{0,600}?)[.,]\s*\[?((?:19|20)\d{2}|n\.\s*d\.)\]?[a-z]?\.\s/;
 
+/** 참고문헌에서 제목으로 보이는 부분 (검색어로 쓴다) */
+export function refTitleGuess(entry) {
+  const { rest } = splitRef(entry);
+  const first = rest.split(/(?<=[.?!])\s+/)[0] || rest;
+  return clean(first).replace(/[ .]+$/, '').slice(0, 300);
+}
+
+/** OpenAlex 결과를 CSL 모양으로 맞춘다 (아래 헬퍼들을 그대로 쓰기 위해) */
+export function openAlexToCsl(w) {
+  const author = (w.authorships || []).map(a => {
+    const n = clean(a.author?.display_name || '');
+    const parts = n.split(/\s+/);
+    const family = parts.length > 1 ? parts.pop() : n;
+    return { family, given: parts.join(' ') };
+  });
+  return {
+    DOI: String(w.doi || '').replace(/^https?:\/\/(dx\.)?doi\.org\//i, ''),
+    title: w.title || '',
+    author,
+    issued: { 'date-parts': [[w.publication_year]] },
+    'container-title': w.primary_location?.source?.display_name || '',
+  };
+}
+
 /** @returns {{authorsPart: string, year: string|null, rest: string}} */
 export function splitRef(entry) {
   const m = AUTHORS_YEAR_RE.exec(entry);
@@ -245,7 +269,10 @@ export function scoreCandidate(entry, cand) {
     .map(a => { const p = a.split(/\s+/); return p.length ? p[p.length - 1] : a; })
     .filter(f => norm(f).length >= 3);
   const scope = norm(authorsPart) || flat;
-  const authorHit = fams.length ? fams.filter(f => scope.includes(norm(f))).length / fams.length : 0;
+  // Crossref 에 저자가 아예 없는 기록이 흔하다 (책 챕터 등). 그럴 땐 감점하지 않는다.
+  const authorHit = fams.length
+    ? fams.filter(f => scope.includes(norm(f))).length / fams.length
+    : null;
 
   const cy = cslYear(cand);
   let year;
@@ -255,7 +282,12 @@ export function scoreCandidate(entry, cand) {
   else year = 'mismatch';
 
   let level;
-  if (titleRatio >= 0.90 && authorHit >= 0.5 && year !== 'mismatch') level = 'high';
+  if (authorHit === null) {
+    // 저자로 교차확인할 수 없으니 제목·연도만으로 판단하고 기준을 올린다
+    if (titleRatio >= 0.95 && (year === 'match' || year === 'near')) level = 'high';
+    else if (titleRatio >= 0.90 && year !== 'mismatch') level = 'medium';
+    else level = 'none';
+  } else if (titleRatio >= 0.90 && authorHit >= 0.5 && year !== 'mismatch') level = 'high';
   else if (titleRatio >= 0.90 && authorHit >= 0.5) level = 'medium';   // 연도만 다름 = 선공개판일 수 있음
   else if (titleRatio >= 0.78 && authorHit >= 0.34 && year !== 'mismatch') level = 'medium';
   else level = 'none';
@@ -263,7 +295,7 @@ export function scoreCandidate(entry, cand) {
   return {
     level,
     titleRatio: Math.round(titleRatio * 1000) / 1000,
-    authorHit: Math.round(authorHit * 1000) / 1000,
+    authorHit: authorHit === null ? null : Math.round(authorHit * 1000) / 1000,
     year,
     nAuthors: fams.length,
   };

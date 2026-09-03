@@ -189,23 +189,39 @@ button.ghost { font-size: .95rem; padding: .45rem .95rem; color: var(--dim); }
 .reflist { border-bottom: 1px solid var(--line); margin-top: 1.25rem; }
 .ref { border-top: 1px solid var(--line); }
 .ref > summary {
-  display: grid; grid-template-columns: 4.25rem minmax(0, 1fr);
-  gap: 0 1rem; padding: .7rem 0; cursor: pointer; list-style: none;
+  display: grid; grid-template-columns: 5rem minmax(0, 1fr);
+  gap: 0 1rem; padding: .5rem 0; cursor: pointer; list-style: none;
   align-items: baseline;
 }
 .ref > summary::-webkit-details-marker { display: none; }
 .ref > summary:hover .ref-sum { color: var(--fg); }
 .ref[open] > summary { padding-bottom: .3rem; }
 .ref[open] > summary .ref-sum { display: none; }
+/* 접힌 행은 한 줄을 넘지 않는다 */
 .ref-sum {
-  color: var(--dim); font-size: .97rem; line-height: 1.5;
-  overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  color: var(--dim); font-size: .97rem;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.ref-b { margin-left: 5.25rem; padding-bottom: 1.1rem; }
+/* 손볼 것 없는 행은 뒤로 물러나 있는다 */
+.ref.match > summary, .ref.web > summary { opacity: .45; }
+.ref.match > summary:hover, .ref.web > summary:hover { opacity: 1; }
+.ref-b { margin-left: 6rem; padding-bottom: 1.1rem; }
 .ref-n {
   display: inline-flex; align-items: baseline; gap: .4rem;
-  font-family: var(--mono); font-size: 1.05rem; font-variant-numeric: tabular-nums;
+  font-family: var(--mono); font-size: .98rem; font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
+
+/* 이상 없는 구간의 중략 띠 */
+.gap {
+  display: flex; align-items: center; gap: .7rem; width: 100%;
+  padding: .5rem 0; border: none; border-top: 1px solid var(--line);
+  background: transparent; color: var(--dim); font-size: .92rem;
+  cursor: pointer; text-align: left; border-radius: 0;
+}
+.gap:hover { color: var(--fg); background: var(--panel); }
+.gap-i { font-family: var(--mono); width: 5rem; flex: none; letter-spacing: .15em; }
+.gap-r { font-family: var(--mono); font-variant-numeric: tabular-nums; }
 .ref-n .st { font-weight: 700; }
 .st.error, .st.fail { color: var(--err); }
 .st.warn, .st.likely { color: var(--warn); }

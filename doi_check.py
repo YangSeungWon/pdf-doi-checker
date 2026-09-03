@@ -270,6 +270,7 @@ class _Limiter:
 
 _gate_doi = _Limiter(_RATE_DOI)
 _gate_search = _Limiter(_RATE_SEARCH)
+_gate_openalex = _Limiter(2.0)
 
 
 def _cache_path(doi: str, kind: str) -> str:
@@ -401,6 +402,13 @@ def guess_title(rest: str, official_title: str) -> str:
     return best.rstrip(" .")
 
 
+def ref_title_guess(entry: str) -> str:
+    """참고문헌에서 제목으로 보이는 부분 (검색어로 쓴다)."""
+    _, _, rest = split_ref(entry)
+    first = re.split(r"(?<=[.?!])\s+", rest)[0] if rest else ""
+    return clean(first).rstrip(" .")[:300]
+
+
 def csl_authors(csl: dict) -> list[str]:
     out = []
     for a in csl.get("author") or []:
@@ -436,14 +444,33 @@ def csl_title(csl: dict) -> str:
     return t
 
 
+VENUE_KEYS = ("container-title", "event-title", "event", "collection-title", "publisher")
+
+
 def csl_container(csl: dict) -> str:
-    for key in ("container-title", "event-title", "event", "publisher"):
+    for key in VENUE_KEYS:
         v = csl.get(key)
         if isinstance(v, list):
             v = v[0] if v else ""
         if v:
             return clean(v)
     return ""
+
+
+def csl_venues(csl: dict) -> list[str]:
+    """게재처 후보 전부.
+
+    Springer LNCS 처럼 container-title 은 총서명이고 참고문헌에는 권 제목이
+    적히는 경우가 있어, 하나라도 맞으면 통과시킨다.
+    """
+    out = []
+    for key in VENUE_KEYS:
+        v = csl.get(key)
+        if isinstance(v, list):
+            v = v[0] if v else ""
+        if v:
+            out.append(clean(v))
+    return out
 
 
 def compare(entry: str, csl: dict) -> list[dict]:
@@ -507,8 +534,10 @@ def compare(entry: str, csl: dict) -> list[dict]:
         })
 
     # --- 게재처 -------------------------------------------------------
+    # 판단은 대표 이름으로 하되, 후보 중 하나라도 맞으면 통과
     venue = csl_container(csl)
-    if venue and len(norm(venue)) > 8 and not venue_matches(entry, venue):
+    if (venue and len(norm(venue)) > 8
+            and not any(venue_matches(entry, v) for v in csl_venues(csl))):
         add("venue", venue_guess(rest, venue), venue,
             "축약 표기까지 감안해도 일치하지 않음")
 
@@ -697,7 +726,8 @@ def score_candidate(entry: str, cand: dict) -> dict:
     fams = [a.split()[-1] for a in csl_authors(cand) if a.split()]
     scope = norm(authors_part) or flat
     checkable = [f for f in fams if len(norm(f)) >= 3]
-    a_hit = (sum(norm(f) in scope for f in checkable) / len(checkable)) if checkable else 0.0
+    # Crossref 에 저자가 아예 없는 기록이 흔하다 (책 챕터 등). 그럴 땐 감점하지 않는다.
+    a_hit = (sum(norm(f) in scope for f in checkable) / len(checkable)) if checkable else None
 
     cy = csl_year(cand)
     if not cy or not ref_year:
@@ -709,7 +739,15 @@ def score_candidate(entry: str, cand: dict) -> dict:
     else:
         y = "mismatch"
 
-    if t_ratio >= 0.90 and a_hit >= 0.5 and y != "mismatch":
+    if a_hit is None:
+        # 저자로 교차확인할 수 없으니 제목·연도만 보고 기준을 올린다
+        if t_ratio >= 0.95 and y in ("match", "near"):
+            level = "high"
+        elif t_ratio >= 0.90 and y != "mismatch":
+            level = "medium"
+        else:
+            level = "none"
+    elif t_ratio >= 0.90 and a_hit >= 0.5 and y != "mismatch":
         level = "high"
     elif t_ratio >= 0.90 and a_hit >= 0.5:
         level = "medium"          # 제목·저자는 맞는데 연도가 다름 (선공개판일 수 있음)
@@ -718,8 +756,113 @@ def score_candidate(entry: str, cand: dict) -> dict:
     else:
         level = "none"
     return {"level": level, "title_ratio": round(t_ratio, 3),
-            "author_hit": round(a_hit, 3), "year": y,
+            "author_hit": None if a_hit is None else round(a_hit, 3), "year": y,
             "n_authors": len(checkable)}
+
+
+# arXiv 는 모든 프리프린트에 DataCite DOI 를 붙인다: 10.48550/arXiv.<id>
+ARXIV_RE = re.compile(
+    r"(?i)arxiv[.:\s/]*(?:abs/)?((?:\d{4}\.\d{4,5})|(?:[a-z-]+(?:\.[A-Z]{2})?/\d{7}))(?:v\d+)?"
+)
+
+
+def arxiv_candidate(entry: str, use_cache: bool) -> dict | None:
+    """참고문헌에 적힌 arXiv ID 로 DOI 를 만들어 확인한다.
+
+    ID 가 원문에 직접 인쇄돼 있으니 제목만 맞으면 후보로 올리되, 저자가
+    어긋나면 '추정' 으로 내려 사람이 지표를 보고 판단하게 한다.
+    """
+    m = ARXIV_RE.search(entry)
+    if not m:
+        return None
+    doi = "10.48550/arXiv." + m.group(1)
+    status, body = fetch(doi, "csl", use_cache)
+    if status != 200:
+        return None
+    try:
+        csl = json.loads(body)
+    except json.JSONDecodeError:
+        return None
+    sc = score_candidate(entry, csl)
+    if sc["title_ratio"] < 0.85:
+        return None
+    # 저자가 어긋나면 '확실' 이 아니라 '추정' 으로 내려 사람이 보고 판단하게 한다
+    strong = sc["title_ratio"] >= 0.95 and (
+        sc["author_hit"] is None or sc["author_hit"] >= 0.5)
+    sc["level"] = "high" if strong else "medium"
+    return {
+        "doi": doi, "title": csl_title(csl), "authors": csl_authors(csl),
+        "year": csl_year(csl), "container": csl_container(csl), "score": sc,
+    }
+
+
+OA_SELECT = "id,doi,title,publication_year,authorships,primary_location"
+
+
+def openalex_to_csl(w: dict) -> dict:
+    """OpenAlex 결과를 CSL 모양으로 (아래 헬퍼들을 그대로 쓰기 위해)."""
+    author = []
+    for a in w.get("authorships") or []:
+        name = clean((a.get("author") or {}).get("display_name", ""))
+        parts = name.split()
+        if not parts:
+            continue
+        author.append({"family": parts[-1] if len(parts) > 1 else name,
+                       "given": " ".join(parts[:-1])})
+    src = ((w.get("primary_location") or {}).get("source") or {}).get("display_name", "")
+    return {
+        "DOI": re.sub(r"(?i)^https?://(dx\.)?doi\.org/", "", str(w.get("doi") or "")),
+        "title": w.get("title") or "",
+        "author": author,
+        "issued": {"date-parts": [[w.get("publication_year")]]},
+        "container-title": src,
+    }
+
+
+def openalex_candidate(entry: str, use_cache: bool) -> dict | None:
+    """OpenAlex 로 한 번 더 찾아본다 (Crossref 가 놓치는 학술서 챕터 등).
+
+    OpenAlex 는 doi.org 에 등록되지 않은 DOI 도 들고 있으므로, 해석되는 것만
+    채택하고 공식 기록으로 다시 채점한다.
+    """
+    title = ref_title_guess(entry)
+    if not title:
+        return None
+    params = {"filter": "title.search:" + title, "per_page": "3", "select": OA_SELECT}
+    if MAILTO:
+        params["mailto"] = MAILTO
+    _gate_openalex.wait()
+    status, body = _http_get("https://api.openalex.org/works?" + urllib.parse.urlencode(params),
+                             "application/json")
+    if status != 200:
+        return None
+    try:
+        results = json.loads(body).get("results") or []
+    except json.JSONDecodeError:
+        return None
+
+    for w in results:
+        csl = openalex_to_csl(w)
+        if not csl["DOI"]:
+            continue
+        if score_candidate(entry, csl)["level"] == "none":
+            continue
+        st, bd = fetch(csl["DOI"], "csl", use_cache)      # doi.org 에서 풀리는지
+        if st != 200:
+            continue
+        try:
+            official = json.loads(bd)
+        except json.JSONDecodeError:
+            continue
+        sc = score_candidate(entry, official)
+        if sc["level"] == "none":
+            continue
+        return {
+            "doi": csl["DOI"], "title": csl_title(official),
+            "authors": csl_authors(official), "year": csl_year(official),
+            "container": csl_container(official), "score": sc,
+        }
+    return None
 
 
 def find_one(item: dict, use_cache: bool) -> dict:
@@ -751,6 +894,14 @@ def find_one(item: dict, use_cache: bool) -> dict:
             }
         if sc["level"] == "high":
             break
+
+    # Crossref 에 정식 출판본이 없으면 arXiv DOI 를 직접 만들어 확인한다
+    # (출판본이 있으면 그쪽이 낫기 때문에 검색을 먼저 한다)
+    if best is None:
+        best = arxiv_candidate(entry, use_cache)
+    if best is None:
+        best = openalex_candidate(entry, use_cache)
+
     item["found"] = best
     return item
 
@@ -932,9 +1083,10 @@ def main() -> int:
             byline = ", ".join(f["authors"][:4]) + (" 외" if len(f["authors"]) > 4 else "")
             print(f"   {c.D}Crossref:{c.X} {shorten(f['title'], 200)}")
             print(f"             {shorten(byline, 120)} · {f['container'] or '?'} · {f['year'] or '?'}")
+            a = ("기록에 저자 없음" if sc["author_hit"] is None
+                 else f"{int(sc['author_hit'] * 100)}% ({sc['n_authors']}명 기준)")
             print(f"   {c.D}근거: 제목 유사도 {sc['title_ratio']} · "
-                  f"저자 일치 {int(sc['author_hit'] * 100)}% ({sc['n_authors']}명 기준) · "
-                  f"연도 {sc['year']}{c.X}")
+                  f"저자 일치 {a} · 연도 {sc['year']}{c.X}")
 
     if args.list_nodoi and without_doi:
         print(f"\n{c.B}DOI가 없어 검사하지 못한 항목 {len(without_doi)}건{c.X}")

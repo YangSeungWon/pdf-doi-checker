@@ -1,8 +1,11 @@
 import * as pdfjsLib from '../vendor/pdfjs/pdf.min.mjs';
 import { extractText } from './pdftext.js';
 import { sliceReferences, splitEntries, extractDoi } from './refs.js';
-import { fetchDoi, crossrefSearch, pool, clearCache } from './meta.js';
-import { compare, scoreCandidate, cslTitle, cslAuthors, cslYear, cslContainer } from './compare.js';
+import { fetchDoi, crossrefSearch, openAlexSearch, pool, clearCache } from './meta.js';
+import {
+  compare, scoreCandidate, cslTitle, cslAuthors, cslYear, cslContainer,
+  refTitleGuess, openAlexToCsl,
+} from './compare.js';
 import { clean, shorten, wordSpans } from './text.js';
 import { t, getLang, setLang, LANGS } from './i18n.js';
 
@@ -52,17 +55,35 @@ function applyStatic() {
     b.onclick = () => { setLang(l); applyStatic(); if (report) render(); };
     box.append(b);
   }
-  if (!busy) setStatus('', null);
+  if (!busy) setStatus('');
 }
 
 // ---------------------------------------------------------------------------
 // 분석
 // ---------------------------------------------------------------------------
 
-function setStatus(msg, pct) {
+function setStatus(msg) {
   $('#status').textContent = msg;
-  $('#progress').hidden = pct === null || pct === undefined;
-  if (typeof pct === 'number') $('#bar').style.width = `${Math.round(pct * 100)}%`;
+}
+
+/**
+ * 진행 표시. 몇 개 중 몇 개인지가 주(主)이고, 지금 무슨 단계인지가 부(副).
+ * @param {number} done 처리된 개수
+ * @param {number} total 전체 개수
+ * @param {string} unit 단위 (쪽 / 참고문헌)
+ * @param {string} stage 현재 단계 설명
+ */
+function setProgress(done, total, unit, stage) {
+  $('#progress').hidden = false;
+  $('#pg-n').textContent = String(done);
+  $('#pg-t').textContent = String(total);
+  $('#pg-u').textContent = unit;
+  $('#pg-sub').textContent = stage;
+  $('#bar').style.width = `${total ? Math.round((done / total) * 100) : 0}%`;
+}
+
+function hideProgress() {
+  $('#progress').hidden = true;
 }
 
 async function analyze(file) {
@@ -77,16 +98,17 @@ async function analyze(file) {
   try {
     const opts = { findMissing: true, mailto: '', workers: 6 };
 
-    setStatus(`${t().reading} ${file.name}`, 0);
+    setProgress(0, 1, '', `${t().reading} ${file.name}`);
     const buf = await file.arrayBuffer();
     const doc = await extractText(pdfjsLib, buf, (p, n) =>
-      setStatus(`${t().extracting} ${p}/${n} ${t().page}`, (p / n) * 0.25));
+      setProgress(p, n, t().page, t().extracting));
 
     const refsText = sliceReferences(doc.text);
     const entries = splitEntries(refsText);
     if (!entries.length) {
       report = { file: file.name, doc, entries: [], checked: [], withoutDoi: [], refsText };
-      setStatus(t().noRefs, null);
+      hideProgress();
+      setStatus(t().noRefs);
       renderDebug();
       return;
     }
@@ -97,8 +119,8 @@ async function analyze(file) {
       (doi ? withDoi : withoutDoi).push({ ...e, doi: doi || null });
     }
 
-    const p1 = opts.findMissing ? 0.35 : 0.75;
-    setStatus(`${t().querying} 0/${withDoi.length}`, 0.25);
+    const total = entries.length;
+    setProgress(0, total, t().tRefs, `${t().querying} 0/${withDoi.length}`);
     const checked = await pool(withDoi, opts.workers, async item => {
       const res = await fetchDoi(item.doi, 'csl');
       if (!res.ok) {
@@ -124,7 +146,7 @@ async function analyze(file) {
         },
         issues: compare(item.entry, csl),
       };
-    }, (d, n) => setStatus(`${t().querying} ${d}/${n}`, 0.25 + (d / n) * p1));
+    }, (d, n) => setProgress(d, total, t().tRefs, `${t().querying} ${d}/${n}`));
 
     let missing = withoutDoi.map(x => ({ ...x, found: null, skipped: null }));
     if (opts.findMissing) {
@@ -132,46 +154,111 @@ async function analyze(file) {
       const broken = checked.filter(r => r.status !== 200);
       const targets = [...withoutDoi, ...broken];
       if (targets.length) {
-        setStatus(`${t().searching} 0/${targets.length}`, 0.6);
+        setProgress(withDoi.length, total, t().tRefs, `${t().searching} 0/${targets.length}`);
         // 검색은 요청 수가 많아 동시 실행을 더 낮춘다 (429 방지)
         const searched = await pool(targets, Math.min(opts.workers, 4),
           item => searchOne(item, opts.mailto),
-          (d, n) => setStatus(`${t().searching} ${d}/${n}`, 0.6 + (d / n) * 0.4));
+          (d, n) => setProgress(Math.min(total, withDoi.length + d), total, t().tRefs,
+            `${t().searching} ${d}/${n}`));
         missing = searched.slice(0, withoutDoi.length);
         searched.slice(withoutDoi.length).forEach((r, i) => { broken[i].found = r.found; });
       }
     }
 
     report = { file: file.name, doc, entries, checked, withoutDoi: missing, refsText };
-    setStatus('', null);
+    hideProgress();
+    setStatus('');
     showFilebar(file.name);
     render();
     renderDebug();
   } catch (err) {
     console.error(err);
-    setStatus(`${t().error}: ${err.message}`, null);
+    hideProgress();
+    setStatus(`${t().error}: ${err.message}`);
   } finally {
     busy = false;
     $('#run').disabled = false;
   }
 }
 
-/** 참고문헌 원문으로 Crossref 에서 올바른 문헌을 찾아본다 */
+// arXiv 는 모든 프리프린트에 DataCite DOI 를 붙인다: 10.48550/arXiv.<id>
+const ARXIV_RE = /arxiv[.:\s/]*(?:abs\/)?((?:\d{4}\.\d{4,5})|(?:[a-z-]+(?:\.[A-Z]{2})?\/\d{7}))(?:v\d+)?/i;
+
+function candFrom(csl, doi, source) {
+  return {
+    doi, source, title: cslTitle(csl), authors: cslAuthors(csl),
+    year: cslYear(csl), container: cslContainer(csl),
+    score: null,
+  };
+}
+
+/** 후보 목록에서 가장 그럴듯한 하나를 고른다 */
+function pickBest(entry, cands, source) {
+  let best = null;
+  for (const csl of cands) {
+    if (!csl.DOI) continue;
+    const score = scoreCandidate(entry, csl);
+    if (score.level === 'none') continue;
+    if (!best || score.titleRatio > best.score.titleRatio) {
+      best = { ...candFrom(csl, csl.DOI, source), score };
+    }
+    if (score.level === 'high') break;
+  }
+  return best;
+}
+
+/** 참고문헌 원문으로 올바른 문헌을 찾아본다 */
 async function searchOne(item, mailto) {
   if (WEBISH_RE.test(item.entry)) return { ...item, found: null, skipped: 'web' };
   const search = await crossrefSearch(item.entry, { rows: 3, mailto });
   if (!search.ok) return { ...item, found: null, skipped: 'error' };
-  let best = null;
-  for (const cand of search.items) {
-    const score = scoreCandidate(item.entry, cand);
-    if (score.level === 'none') continue;
-    if (!best || score.titleRatio > best.score.titleRatio) {
-      best = {
-        doi: cand.DOI || '', title: cslTitle(cand), authors: cslAuthors(cand),
-        year: cslYear(cand), container: cslContainer(cand), score,
-      };
+  let best = pickBest(item.entry, search.items, 'crossref');
+
+  // Crossref 에 정식 출판본이 없으면 arXiv DOI 를 직접 만들어 확인한다.
+  // (출판본이 있으면 그쪽이 낫기 때문에 검색을 먼저 한다)
+  if (!best) {
+    const m = ARXIV_RE.exec(item.entry);
+    if (m) {
+      const doi = '10.48550/arXiv.' + m[1];
+      const res = await fetchDoi(doi, 'csl');
+      if (res.ok) {
+        try {
+          const csl = JSON.parse(res.body);
+          const sc = scoreCandidate(item.entry, csl);
+          // ID 가 참고문헌에 직접 적혀 있으니 제목만 맞으면 후보로는 올린다.
+          // 다만 저자가 어긋나면 '확인됨' 이 아니라 '추정' 으로 내려서
+          // 저자 지표를 보고 사람이 판단하게 한다 (기관명 인용 등).
+          if (sc.titleRatio >= 0.85) {
+            const strong = sc.titleRatio >= 0.95
+              && (sc.authorHit === null || sc.authorHit >= 0.5);
+            best = {
+              ...candFrom(csl, doi, 'arxiv'),
+              score: { ...sc, level: strong ? 'high' : 'medium' },
+            };
+          }
+        } catch { /* 무시 */ }
+      }
     }
-    if (score.level === 'high') break;
+  }
+
+  // 그래도 없으면 OpenAlex. Crossref 가 놓치는 학술서 챕터·일부 저널을 덮는다.
+  //
+  // 단, OpenAlex 는 doi.org 에 등록되지 않은 DOI 도 들고 있다 (출판사 사이트에는
+  // 그 경로로 글이 있지만 DOI 등록은 안 된 경우). 풀리지 않는 DOI 를 "넣으세요"
+  // 라고 내미는 건 못 찾았다고 하는 것보다 나쁘므로, 해석되는 것만 채택한다.
+  if (!best) {
+    const oa = await openAlexSearch(refTitleGuess(item.entry), { rows: 3, mailto });
+    const cand = oa.ok ? pickBest(item.entry, oa.items.map(openAlexToCsl), 'openalex') : null;
+    if (cand) {
+      const res = await fetchDoi(cand.doi, 'csl');
+      if (res.ok) {
+        try {
+          const csl = JSON.parse(res.body);        // 공식 기록으로 다시 채점
+          const sc = scoreCandidate(item.entry, csl);
+          if (sc.level !== 'none') best = { ...candFrom(csl, cand.doi, 'openalex'), score: sc };
+        } catch { /* 무시 */ }
+      }
+    }
   }
   return { ...item, found: best, skipped: null };
 }
@@ -313,16 +400,53 @@ function render() {
   }
 
   const list = el('div', 'reflist');
-  for (const x of rows) list.append(refItem(x));
+  appendRows(list, rows, !filter);
   out.append(list);
   $('#exports').hidden = false;
+}
+
+/**
+ * 손볼 것 없는 구간은 diff 처럼 한 줄로 접어 둔다.
+ * 띠를 누르면 그 자리에 원래 행들이 펼쳐진다.
+ */
+function appendRows(list, rows, band) {
+  let i = 0;
+  while (i < rows.length) {
+    if (band && BANDABLE.includes(rows[i].kind)) {
+      let j = i;
+      while (j < rows.length && BANDABLE.includes(rows[j].kind)) j++;
+      const run = rows.slice(i, j);
+      if (run.length >= 3) {
+        list.append(gapBand(run));
+        i = j;
+        continue;
+      }
+    }
+    list.append(refItem(rows[i]));
+    i++;
+  }
+}
+
+function gapBand(run) {
+  const b = el('button', 'gap');
+  const from = run[0].r.label;
+  const to = run[run.length - 1].r.label;
+  b.append(el('span', 'gap-i', '⋯'), el('span', 'gap-r', `[${from}]–[${to}]`),
+    el('span', 'gap-l', t().gapOk(run.length)));
+  b.onclick = () => {
+    const frag = document.createDocumentFragment();
+    run.forEach(x => frag.append(refItem(x)));
+    b.replaceWith(frag);
+  };
+  return b;
 }
 
 // ---------------------------------------------------------------------------
 // 목록 — 참고문헌 번호를 거터에 두고, 비교는 좌우 diff 로 보여준다
 // ---------------------------------------------------------------------------
 
-const CLEAN = ['match', 'found', 'web'];
+const CLEAN = ['match', 'found', 'web'];      // 펼치지 않고 한 줄로 두는 것
+const BANDABLE = ['match', 'web'];            // 손댈 게 없어 중략해도 되는 것
 
 /** 참고문헌 한 건. 문제 없는 건 접어둔다. */
 function refItem({ r, src, kind }) {
@@ -334,7 +458,7 @@ function refItem({ r, src, kind }) {
   const gut = el('span', 'ref-n');
   const st = el('span', `st ${kind}`, ICON[kind] ?? '·');
   st.title = `${T.k[kind]} — ${T.tip[kind]}`;
-  gut.append(st, el('b', null, r.label));
+  gut.append(st, el('b', null, `[${r.label}]`));
   sum.append(gut, el('span', 'ref-sum', shorten(r.entry, 150)));
   item.append(sum);
 
@@ -378,7 +502,7 @@ function recordBlock(csl) {
 
 function candidateBlock(f) {
   const box = el('div', 'fld');
-  box.append(el('div', 'fld-k', t().fCrossref));
+  box.append(el('div', 'fld-k', t().src[f.source] || t().fCrossref));
   const v = el('div', 'fld-v');
   v.append(el('div', 'cand-t', f.title));
   const byline = f.authors.slice(0, 4).join(', ') + (f.authors.length > 4 ? ' +' : '');
@@ -443,8 +567,10 @@ function scoreRow(sc) {
   const box = el('div', 'metrics');
   const grade = (v, ok, warn) => (v >= ok ? 'ok' : v >= warn ? 'warn' : 'low');
   box.append(metric(T.field.title, sc.titleRatio.toFixed(3), '', grade(sc.titleRatio, 0.95, 0.85)));
-  box.append(metric(T.field.authors, `${Math.round(sc.authorHit * 100)}%`,
-    T.note.authorsN(sc.nAuthors), grade(sc.authorHit, 1, 0.5)));
+  box.append(sc.authorHit === null
+    ? metric(T.field.authors, '—', T.note.noAuthors, '')
+    : metric(T.field.authors, `${Math.round(sc.authorHit * 100)}%`,
+      T.note.authorsN(sc.nAuthors), grade(sc.authorHit, 1, 0.5)));
   box.append(metric(T.field.year, T.note.year[sc.year], '',
     sc.year === 'match' ? 'ok' : sc.year === 'mismatch' ? 'low' : 'warn'));
   return box;
@@ -545,11 +671,11 @@ function showFilebar(name) {
 }
 
 function setFile(f) {
-  if (!f || f.type !== 'application/pdf') return setStatus(t().pdfOnly, null);
+  if (!f || f.type !== 'application/pdf') return setStatus(t().pdfOnly);
   picked = f;
   $('#filename').textContent = `${f.name} · ${(f.size / 1048576).toFixed(1)} MB`;
   $('#run').disabled = false;
-  setStatus('', null);
+  setStatus('');
 }
 
 drop.addEventListener('click', () => fileInput.click());
@@ -576,7 +702,8 @@ $('#reset').addEventListener('click', () => {
   fileInput.value = '';
   for (const id of ['#summary', '#exports', '#debug']) $(id).hidden = true;
   $('#results').innerHTML = '';
-  setStatus('', null);
+  hideProgress();
+  setStatus('');
   window.scrollTo({ top: 0, behavior: 'smooth' });
 });
 $('#dl-bib').addEventListener('click', exportBibtex);
