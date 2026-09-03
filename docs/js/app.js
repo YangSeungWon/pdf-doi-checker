@@ -2,7 +2,7 @@ import * as pdfjsLib from '../vendor/pdfjs/pdf.min.mjs';
 import { extractText } from './pdftext.js';
 import { sliceReferences, splitEntries, extractDoi } from './refs.js';
 import {
-  fetchDoi, crossrefSearch, openAlexSearch, crossrefUpdates, pool, clearCache,
+  fetchDoi, crossrefSearch, openAlexSearch, crossrefUpdates, checkRepo, pool, clearCache,
 } from './meta.js';
 import {
   compare, scoreCandidate, cslTitle, cslAuthors, cslYear, cslContainer,
@@ -28,7 +28,7 @@ const REPO_RE = new RegExp(
 
 const ICON = {
   error: '✕', warn: '!', match: '✓',
-  found: '✓', likely: '?', none: '—', repo: '⌘', web: '🔗', fail: '⚠',
+  found: '✓', likely: '?', none: '—', repo: '⌘', dead: '✕', web: '🔗', fail: '⚠',
 };
 const LANG_NAME = { en: 'EN', ko: '한국어' };
 
@@ -230,7 +230,15 @@ function pickBest(entry, cands, source) {
 
 /** 참고문헌 원문으로 올바른 문헌을 찾아본다 */
 async function searchOne(item, mailto) {
-  if (REPO_RE.test(item.entry)) return { ...item, found: null, skipped: 'repo' };
+  if (REPO_RE.test(item.entry)) {
+    // 저장소는 DOI 를 찾을 게 아니라 아직 있는지를 확인해야 한다
+    const repo = await checkRepo(item.entry);
+    return {
+      ...item, found: null,
+      skipped: repo.state === 'dead' ? 'dead' : 'repo',
+      repo,
+    };
+  }
   if (WEBISH_RE.test(item.entry)) return { ...item, found: null, skipped: 'web' };
   const search = await crossrefSearch(item.entry, { rows: 3, mailto });
   if (!search.ok) return { ...item, found: null, skipped: 'error' };
@@ -300,6 +308,7 @@ function bucketOf(r, kind) {
     if (r.issues.some(i => i.severity === 'error')) return 'error';
     return r.issues.length ? 'warn' : 'match';
   }
+  if (r.skipped === 'dead') return 'dead';
   if (r.skipped === 'repo') return 'repo';
   if (r.skipped === 'web') return 'web';
   if (r.skipped === 'error') return 'fail';
@@ -308,7 +317,7 @@ function bucketOf(r, kind) {
 }
 
 const DOI_KEYS = ['error', 'warn', 'match'];
-const NODOI_KEYS = ['found', 'likely', 'none', 'repo', 'web', 'fail'];
+const NODOI_KEYS = ['found', 'likely', 'none', 'dead', 'repo', 'web', 'fail'];
 
 function counted(list, kind, keys) {
   const c = Object.fromEntries(keys.map(k => [k, 0]));
@@ -417,18 +426,31 @@ function render() {
   let rows = allRefs();
   if (filter) {
     rows = rows.filter(x => x.kind === filter);
-    const clear = el('button', 'ghost clear');
-    clear.append(el('span', null, '✕'), el('span', null, T.clearFilter));
-    clear.onclick = () => setFilter(null);
-    const head = el('div', 'filter-h');
-    head.append(heading(T.k[filter], rows.length, T.tip[filter]), clear);
-    out.append(head);
+    out.append(filterBar(filter, rows.length, entries.length));
   }
 
-  const list = el('div', 'reflist');
+  const list = el('div', `reflist${filter ? ' filtered' : ''}`);
   appendRows(list, rows, !filter);
   out.append(list);
+  if (filter) out.append(clearButton('bottom'));
   $('#restart').hidden = false;
+}
+
+function clearButton(where) {
+  const b = el('button', `clear ${where}`);
+  b.append(el('span', null, '✕'), el('span', null, t().clearFilter));
+  b.onclick = () => setFilter(null);
+  return b;
+}
+
+/** 지금 무엇만 보고 있는지, 전체 중 몇 건인지 */
+function filterBar(kind, shown, total) {
+  const T = t();
+  const bar = el('div', `filterbar ${kind}`);
+  const what = el('span', 'fb-what');
+  what.append(el('span', 'dot', ICON[kind] ?? '·'), el('span', null, T.k[kind] + T.filtering));
+  bar.append(what, el('span', 'fb-count', T.filterCount(shown, total)), clearButton('top'));
+  return bar;
 }
 
 /**
@@ -494,20 +516,42 @@ function refItem({ r, src, kind }) {
 
   const body = el('div', 'ref-b');
   const doi = src === 'doi' ? r.doi : r.found?.doi;
-  if (doi) body.append(doiLink(doi));
   body.append(el('p', 'src', r.entry));
 
   if (src === 'doi') {
     for (const i of r.issues) body.append(i.field === 'status' ? statusBlock(i) : fieldBlock(i));
     if (kind === 'match' && r.csl) body.append(recordBlock(r.csl));
     if (r.found) body.append(suggestBlock(r.found));
-    else if (r.issues.length && r.csl) body.append(bibButton(r.doi));
   } else if (r.found) {
     body.append(candidateBlock(r.found));
-    body.append(bibButton(r.found.doi));
+  } else if (r.repo && r.repo.state !== 'unknown') {
+    body.append(repoBlock(r.repo));
   }
+
+  // 어느 항목이든 원문으로 바로 갈 수 있게 한다
+  const links = el('div', 'links');
+  if (doi) links.append(outLink('https://doi.org/' + doi, `doi.org/${doi}`));
+  // arXiv 초록 페이지에는 개정 이력과 철회 표시가 있다. 우리가 메타데이터로는
+  // 알 수 없는 정보라, ID 가 적혀 있으면 항상 바로 갈 수 있게 둔다.
+  const ax = ARXIV_RE.exec(r.entry);
+  if (ax) links.append(outLink(`https://arxiv.org/abs/${ax[1]}`, `arXiv:${ax[1]}`));
+  const q = refTitleGuess(r.entry) || clean(r.entry).slice(0, 200);
+  links.append(outLink(
+    'https://scholar.google.com/scholar?q=' + encodeURIComponent(q), t().scholar));
+  body.append(links);
+
   item.append(body);
   return item;
+}
+
+function outLink(href, label) {
+  const a = el('a', 'outlink');
+  a.href = href;
+  a.target = '_blank';
+  a.rel = 'noopener';
+  a.append(el('span', null, '↗'), el('span', null, label));
+  a.firstChild.setAttribute('aria-hidden', 'true');
+  return a;
 }
 
 function doiLink(doi) {
@@ -566,6 +610,22 @@ function side(cls, key, spans, raw) {
   return r;
 }
 
+/** 저장소가 아직 있는지 확인한 결과 */
+function repoBlock(repo) {
+  const T = t();
+  const box = el('div', `fld ${repo.state === 'dead' ? 'error' : ''}`);
+  box.append(el('div', 'fld-k', T.k[repo.state === 'dead' ? 'dead' : 'repo']));
+  const v = el('div', 'fld-v');
+  if (repo.state === 'dead') {
+    v.append(el('div', 'cand-t', T.note.repoGone));
+  } else {
+    v.append(el('div', 'cand-t', repo.name || ''));
+    if (repo.note === 'archived') v.append(el('div', 'note', T.note.archived));
+  }
+  box.append(v);
+  return box;
+}
+
 /** 철회·정정 같은 상태는 좌우 비교가 아니라 한 줄로 알린다 */
 function statusBlock(i) {
   const box = el('div', `fld ${i.severity}`);
@@ -605,14 +665,12 @@ function renderNote(note) {
 
 /** 해석되지 않는 DOI 에 대해 Crossref 가 제안하는 올바른 문헌 */
 function suggestBlock(f) {
-  const wrap = el('div');
   const box = el('div', 'fld suggest');
   box.append(el('div', 'fld-k', t().suggest));
   const v = el('div', 'fld-v');
   v.append(doiLink(f.doi), el('div', 'cand-t', f.title), scoreRow(f.score));
   box.append(v);
-  wrap.append(box, bibButton(f.doi));
-  return wrap;
+  return box;
 }
 
 /** 매칭 근거를 지표 세 개로 나눠 보여준다 */
@@ -635,31 +693,6 @@ function metric(label, value, sub, cls) {
   m.append(el('span', 'm-l', label), el('b', null, value));
   if (sub) m.append(el('small', null, sub));
   return m;
-}
-
-function bibButton(doi) {
-  const btn = el('button', 'ghost bib-btn');
-  btn.append(el('span', null, '{ }'), el('span', null, t().bibtex));
-  btn.onclick = async () => {
-    btn.disabled = true;
-    btn.lastChild.textContent = t().loading;
-    const res = await fetchDoi(doi, 'bib');
-    btn.replaceWith(bibBlock(res.ok ? res.body.trim() : `${t().fetchFail} (HTTP ${res.status})`));
-  };
-  return btn;
-}
-
-function bibBlock(text) {
-  const wrap = el('div', 'bib');
-  const copy = el('button', 'ghost');
-  copy.append(el('span', null, '⧉'), el('span', null, t().copy));
-  copy.onclick = () => {
-    navigator.clipboard.writeText(text);
-    copy.lastChild.textContent = t().copied;
-    setTimeout(() => (copy.lastChild.textContent = t().copy), 1200);
-  };
-  wrap.append(el('pre', null, text), copy);
-  return wrap;
 }
 
 function renderDebug() {

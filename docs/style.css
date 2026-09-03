@@ -145,8 +145,7 @@ button.ghost { font-size: .95rem; padding: .45rem .95rem; color: var(--dim); }
 }
 .seg.match, .seg.found { background: #3f8a63; }
 .seg.warn, .seg.likely { background: #b8862b; }
-.seg.error, .seg.fail { background: #b3463c; }
-.seg.none { background: #8d8981; }
+.seg.error, .seg.fail, .seg.none, .seg.dead { background: #b3463c; }
 .seg.repo, .seg.web { background: #6f7b8c; }
 .seg:hover { filter: brightness(1.12); }
 
@@ -162,15 +161,13 @@ button.ghost { font-size: .95rem; padding: .45rem .95rem; color: var(--dim); }
 .chip-i { font-weight: 700; }
 .chip.match .chip-i, .chip.found .chip-i { color: var(--ok); }
 .chip.warn .chip-i, .chip.likely .chip-i { color: var(--warn); }
-.chip.error .chip-i, .chip.fail .chip-i { color: var(--err); }
+.chip.error .chip-i, .chip.fail .chip-i,
+.chip.none .chip-i, .chip.dead .chip-i { color: var(--err); }
 .chip.match.on { color: var(--ok); }
 .chip.found.on { color: var(--ok); }
 .chip.warn.on, .chip.likely.on { color: var(--warn); }
-.chip.error.on, .chip.fail.on { color: var(--err); }
+.chip.error.on, .chip.fail.on, .chip.none.on, .chip.dead.on { color: var(--err); }
 
-.filter-h { display: flex; align-items: center; gap: .8rem; flex-wrap: wrap; }
-.filter-h h2 { margin: 2rem 0 1rem; }
-.clear { align-self: center; margin-top: 1rem; }
 
 /* 매칭 근거 지표 */
 .metrics { display: flex; flex-wrap: wrap; gap: .45rem; margin-top: .7rem; }
@@ -208,8 +205,42 @@ button.ghost { font-size: .95rem; padding: .45rem .95rem; color: var(--dim); }
 }
 .h-s { font-size: .95rem; font-weight: 400; color: var(--dim); }
 
-.filter-h { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; }
-.clear { align-self: center; margin-top: 2.5rem; }
+
+/* 필터가 걸려 있다는 걸 분명히 보여준다 */
+.filterbar {
+  position: sticky; top: 0; z-index: 5;
+  display: flex; align-items: center; gap: .9rem; flex-wrap: wrap;
+  margin: 1.5rem 0 .5rem; padding: .85rem 1.1rem;
+  background: var(--panel); border: 2px solid var(--accent);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, .1);
+}
+.fb-what { font-size: 1.1rem; font-weight: 650; }
+.fb-what .dot { font-weight: 700; margin-right: .35rem; }
+.fb-count { color: var(--dim); font-size: .95rem; }
+.clear {
+  background: var(--accent); border-color: var(--accent);
+  color: var(--bg); font-weight: 650; font-size: .95rem; padding: .45rem 1.1rem;
+}
+.clear:hover { filter: brightness(1.12); border-color: var(--accent); }
+.filterbar .clear { margin-left: auto; }
+.clear.bottom { display: flex; margin: 3rem auto 0; }
+
+.filterbar.error, .filterbar.none, .filterbar.fail, .filterbar.dead { border-color: var(--err); }
+.filterbar.warn, .filterbar.likely { border-color: var(--warn); }
+.filterbar.error .dot, .filterbar.none .dot,
+.filterbar.fail .dot, .filterbar.dead .dot { color: var(--err); }
+.filterbar.warn .dot, .filterbar.likely .dot { color: var(--warn); }
+.filterbar.match .dot, .filterbar.found .dot { color: var(--ok); }
+.filterbar.error .clear, .filterbar.none .clear,
+.filterbar.fail .clear, .filterbar.dead .clear {
+  background: var(--err); border-color: var(--err);
+}
+.filterbar.warn .clear, .filterbar.likely .clear {
+  background: var(--warn); border-color: var(--warn);
+}
+
+/* 필터 중에는 목록이 좁혀져 있다는 걸 왼쪽 선으로 계속 상기시킨다 */
+.reflist.filtered { border-left: 3px solid var(--accent); padding-left: 1.1rem; }
 
 /* 참고문헌 목록 — 번호를 거터에 두고 헤어라인으로만 나눈다 */
 .reflist { border-bottom: 1px solid var(--line); margin-top: 1.25rem; }
@@ -253,16 +284,16 @@ button.ghost { font-size: .95rem; padding: .45rem .95rem; color: var(--dim); }
   border: 1px solid currentColor; padding: 0 .4rem; margin-left: auto;
 }
 .ref-n .st { font-weight: 700; }
-.st.error, .st.fail, .st.none { color: var(--err); }
+.st.error, .st.fail, .st.none, .st.dead { color: var(--err); }
 .st.warn, .st.likely { color: var(--warn); }
 .st.match, .st.found { color: var(--ok); }
 .st.repo, .st.web { color: var(--dim); }
 
 /* 손봐야 하는 줄은 바탕으로 짚어 준다.
    빨강 = 틀렸거나 끝내 확인 못 함, 노랑 = 사람이 봐야 함 */
-.ref.error, .ref.none, .ref.fail { background: var(--err-bg); }
+.ref.error, .ref.none, .ref.fail, .ref.dead { background: var(--err-bg); }
 .ref.warn, .ref.likely { background: var(--warn-bg); }
-.ref.error, .ref.none, .ref.fail, .ref.warn, .ref.likely {
+.ref.error, .ref.none, .ref.fail, .ref.dead, .ref.warn, .ref.likely {
   padding-inline: .9rem; margin-inline: -.9rem;
 }
 
@@ -311,13 +342,15 @@ button.ghost { font-size: .95rem; padding: .45rem .95rem; color: var(--dim); }
 .metric.warn b { color: var(--warn); }
 .metric.low b { color: var(--err); }
 
-.bib-btn { margin-top: .7rem; }
-.bib { margin-top: .7rem; }
-.bib pre {
-  background: var(--bg); border: 1px solid var(--line);
-  padding: .8rem .85rem; font-family: var(--mono); font-size: .85rem;
-  white-space: pre-wrap; overflow-wrap: anywhere; margin: 0 0 .4rem;
+/* 바깥으로 나가는 링크 (arXiv 초록 페이지, 직접 검색) */
+.links { display: flex; flex-wrap: wrap; gap: 1.1rem; margin-top: .9rem; }
+.outlink {
+  display: inline-flex; align-items: center; gap: .35rem;
+  font-size: .95rem; color: var(--dim);
+  text-decoration: none; border-bottom: 1px solid var(--line);
 }
+.outlink:hover { color: var(--accent); border-bottom-color: currentColor; }
+
 
 /* ---- debug ---- */
 .debug summary { cursor: pointer; color: var(--dim); font-size: 1rem; }

@@ -148,6 +148,54 @@ export async function openAlexSearch(title, { rows = 3, mailto = '' } = {}) {
   return out;
 }
 
+// 저장소 인용은 본문 URL 로는 확인할 수 없다 (github.com·huggingface.co 둘 다
+// CORS 를 열지 않아 fetch 가 막히고, no-cors 응답은 200 과 404 를 구분할 수 없다).
+// 대신 두 곳 모두 API 는 CORS 를 열어 두었고 없는 것에 404/401 을 준다.
+const REPO_API = [
+  [/github\.com\/([^/\s#?]+)\/([^/\s#?)\]]+)/i,
+    (m) => ({ url: `https://api.github.com/repos/${m[1]}/${trimGit(m[2])}`, host: 'github' })],
+  [/huggingface\.co\/(datasets|spaces)\/([^\s#?)\]]+)/i,
+    (m) => ({ url: `https://huggingface.co/api/${m[1]}/${clip(m[2])}`, host: 'hf' })],
+  [/huggingface\.co\/([^/\s#?]+\/[^\s#?)\]]+)/i,
+    (m) => ({ url: `https://huggingface.co/api/models/${clip(m[1])}`, host: 'hf' })],
+];
+
+const trimGit = (x) => x.replace(/\.git$/, '').replace(/[.,;]+$/, '');
+const clip = (x) => x.split(/[/]/).slice(0, 2).join('/').replace(/[.,;]+$/, '');
+
+/**
+ * 저장소·모델이 실제로 있는지 확인한다.
+ * @returns {Promise<{state: 'alive'|'dead'|'unknown', name?: string, note?: string}>}
+ */
+export async function checkRepo(entry) {
+  for (const [re, build] of REPO_API) {
+    const m = re.exec(entry);
+    if (!m) continue;
+    const { url, host } = build(m);
+    const key = `repo:${url}`;
+    if (cache.has(key)) return cache.get(key);
+
+    let out = { state: 'unknown' };
+    try {
+      const r = await fetch(url, { headers: { Accept: 'application/json' } });
+      if (r.ok) {
+        const d = await r.json();
+        out = {
+          state: 'alive',
+          name: host === 'github' ? d.full_name : d.id,
+          note: host === 'github' && d.archived ? 'archived' : '',
+        };
+      } else if (r.status === 404 || r.status === 401) {
+        out = { state: 'dead' };
+      }
+      // 403/429 (요청 한도) 등은 unknown 으로 두고 넘어간다
+    } catch { /* 네트워크 문제도 unknown */ }
+    cache.set(key, out);
+    return out;
+  }
+  return { state: 'unknown' };
+}
+
 /**
  * 철회·정정 여부를 한꺼번에 조회한다.
  * Crossref 는 Retraction Watch 데이터를 updated-by 로 노출한다.
