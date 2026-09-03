@@ -21,11 +21,22 @@
       <span class="drop-icon" aria-hidden="true">📄</span>
       <strong data-i18n="drop"></strong>
       <span class="drop-sub" data-i18n="dropSub"></span>
-      <span id="filename" class="filename"></span>
     </div>
+
+    <div id="preview" class="preview" hidden>
+      <canvas id="thumb" class="thumb"></canvas>
+      <div class="pv-meta">
+        <div id="filename" class="filename"></div>
+        <div id="pv-pages" class="pv-pages"></div>
+        <button id="change" class="ghost">
+          <span aria-hidden="true">↻</span> <span data-i18n="newFile"></span>
+        </button>
+      </div>
+    </div>
+
     <input id="file" type="file" accept="application/pdf" hidden>
-    <div class="actions">
-      <button id="run" class="primary" disabled>
+    <div id="run-row" class="actions" hidden>
+      <button id="run" class="primary">
         <span aria-hidden="true">▶</span> <span data-i18n="run"></span>
       </button>
     </div>

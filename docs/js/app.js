@@ -681,12 +681,46 @@ function showFilebar(name) {
   $('#pick').hidden = true;
 }
 
+/** 첫 장을 그려서 무엇이 올라왔는지 눈으로 확인시킨다 */
+async function showPreview(file) {
+  const task = pdfjsLib.getDocument({ data: await file.arrayBuffer(), isEvalSupported: false });
+  try {
+    const doc = await task.promise;
+    const page = await doc.getPage(1);
+    const base = page.getViewport({ scale: 1 });
+    const dpr = window.devicePixelRatio || 1;
+    const viewport = page.getViewport({ scale: (168 / base.width) * dpr });
+    const canvas = $('#thumb');
+    canvas.width = viewport.width;
+    canvas.height = viewport.height;
+    canvas.style.width = `${viewport.width / dpr}px`;
+    canvas.style.height = `${viewport.height / dpr}px`;
+    await page.render({ canvas, canvasContext: canvas.getContext('2d'), viewport }).promise;
+    $('#pv-pages').textContent = `${doc.numPages} ${t().page}`;
+  } catch (e) {
+    console.error(e);
+  } finally {
+    await task.destroy();
+  }
+}
+
+function showDropState() {
+  $('#drop').hidden = false;
+  $('#preview').hidden = true;
+  $('#run-row').hidden = true;
+  $('#filename').textContent = '';
+  $('#pv-pages').textContent = '';
+}
+
 function setFile(f) {
   if (!f || f.type !== 'application/pdf') return setStatus(t().pdfOnly);
   picked = f;
   $('#filename').textContent = `${f.name} · ${(f.size / 1048576).toFixed(1)} MB`;
-  $('#run').disabled = false;
+  $('#drop').hidden = true;
+  $('#preview').hidden = false;
+  $('#run-row').hidden = false;
   setStatus('');
+  showPreview(f);
 }
 
 drop.addEventListener('click', () => fileInput.click());
@@ -701,6 +735,11 @@ fileInput.addEventListener('change', () => setFile(fileInput.files[0]));
 drop.addEventListener('drop', e => setFile(e.dataTransfer.files[0]));
 
 $('#run').addEventListener('click', () => picked && analyze(picked));
+$('#change').addEventListener('click', () => {
+  picked = null;
+  fileInput.value = '';
+  showDropState();
+});
 $('#reset').addEventListener('click', () => {
   report = null;
   picked = null;
@@ -708,8 +747,7 @@ $('#reset').addEventListener('click', () => {
   clearCache();
   $('#filebar').hidden = true;
   $('#pick').hidden = false;
-  $('#filename').textContent = '';
-  $('#run').disabled = true;
+  showDropState();
   fileInput.value = '';
   for (const id of ['#summary', '#exports', '#debug']) $(id).hidden = true;
   $('#results').innerHTML = '';

@@ -66,7 +66,17 @@ main, .top, .foot { max-width: 64rem; margin-inline: auto; }
 .drop-icon { font-size: 2.6rem; line-height: 1; }
 .drop strong { font-size: 1.25rem; }
 .drop-sub { color: var(--dim); font-size: 1rem; }
-.filename { color: var(--accent); font-size: .95rem; font-family: var(--mono); margin-top: .4rem; }
+
+/* 올라온 PDF 의 첫 장 */
+.preview { display: flex; gap: 1.25rem; align-items: flex-start; }
+.thumb {
+  border: 1px solid var(--line); background: #fff; flex: none;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .12);
+}
+.pv-meta { display: flex; flex-direction: column; gap: .35rem; align-items: flex-start; min-width: 0; }
+.filename { font-size: 1.05rem; overflow-wrap: anywhere; }
+.pv-pages { color: var(--dim); font-size: .95rem; }
+.pv-meta button { margin-top: .35rem; }
 
 /* 결과가 나오면 업로드 칸 대신 이 줄만 남는다 */
 .filebar {
