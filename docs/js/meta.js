@@ -155,9 +155,9 @@ const REPO_API = [
   [/github\.com\/([^/\s#?]+)\/([^/\s#?)\]]+)/i,
     (m) => ({ url: `https://api.github.com/repos/${m[1]}/${trimGit(m[2])}`, host: 'github' })],
   [/huggingface\.co\/(datasets|spaces)\/([^\s#?)\]]+)/i,
-    (m) => ({ url: `https://huggingface.co/api/${m[1]}/${clip(m[2])}`, host: 'hf' })],
+    (m) => ({ url: `https://huggingface.co/api/${m[1]}/${clip(m[2])}`, host: 'hf', kind: m[1] })],
   [/huggingface\.co\/([^/\s#?]+\/[^\s#?)\]]+)/i,
-    (m) => ({ url: `https://huggingface.co/api/models/${clip(m[1])}`, host: 'hf' })],
+    (m) => ({ url: `https://huggingface.co/api/models/${clip(m[1])}`, host: 'hf', kind: '' })],
 ];
 
 const trimGit = (x) => x.replace(/\.git$/, '').replace(/[.,;]+$/, '');
@@ -171,7 +171,7 @@ export async function checkRepo(entry) {
   for (const [re, build] of REPO_API) {
     const m = re.exec(entry);
     if (!m) continue;
-    const { url, host } = build(m);
+    const { url, host, kind } = build(m);
     const key = `repo:${url}`;
     if (cache.has(key)) return cache.get(key);
 
@@ -180,9 +180,13 @@ export async function checkRepo(entry) {
       const r = await fetch(url, { headers: { Accept: 'application/json' } });
       if (r.ok) {
         const d = await r.json();
+        const name = host === 'github' ? d.full_name : d.id;
         out = {
           state: 'alive',
-          name: host === 'github' ? d.full_name : d.id,
+          name,
+          page: host === 'github'
+            ? (d.html_url || `https://github.com/${name}`)
+            : `https://huggingface.co/${kind ? kind + '/' : ''}${name}`,
           note: host === 'github' && d.archived ? 'archived' : '',
         };
       } else if (r.status === 404 || r.status === 401) {

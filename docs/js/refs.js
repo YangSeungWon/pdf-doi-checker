@@ -35,6 +35,12 @@ export function sliceReferences(text) {
   return best;
 }
 
+/** 마지막 토큰이 URL 한가운데서 끊긴 모양인가 */
+function midUrl(s) {
+  const last = (s.match(/\S+$/) || [''])[0];
+  return /^https?:\/\/\S*[./\-_=?&]$/i.test(last);
+}
+
 /**
  * 항목 안의 줄바꿈을 합친다.
  * 하이픈은 원칙적으로 살려두되(=DOI 보호), 평범한 단어 분철이면 지운다.
@@ -52,6 +58,10 @@ function joinLines(block) {
       // DOI/URL 이거나 고유명사·숫자로 이어지면 하이픈을 남긴다 (Human-Computer)
       s = (isIdent || /^[A-Z0-9]/.test(nextWord)) ? s + line : head + line;
     } else if (/\/$/.test(s) || /^https?:$/i.test((s.match(/\S+$/) || [''])[0]) || /^\/\//.test(line)) {
+      s += line;
+    } else if (midUrl(s) && /^[a-z0-9/_\-~%.]/.test(line)) {
+      // "https://www." 에서 줄이 바뀐 경우. 다음 줄이 소문자로 시작할 때만
+      // 붙인다 ("... https://x.com\nAccessed 2024" 를 망치지 않도록)
       s += line;
     } else {
       s += ' ' + line;

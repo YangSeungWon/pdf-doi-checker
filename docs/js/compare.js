@@ -34,7 +34,13 @@ const AUTHORS_YEAR_RE = /^([\s\S]{0,600}?)[.,]\s*\[?((?:19|20)\d{2}|n\.\s*d\.)\]
 export function refTitleGuess(entry) {
   const { rest } = splitRef(entry);
   const first = rest.split(/(?<=[.?!])\s+/)[0] || rest;
-  return clean(first).replace(/[ .]+$/, '').slice(0, 300);
+  const guess = clean(first).replace(/[ .]+$/, '').slice(0, 300);
+  // "2023. Stable Video." 처럼 저자가 없는 항목은 연도만 잡히기도 한다.
+  // 그럴 땐 검색어로 못 쓰므로 원문 앞부분을 그대로 쓴다.
+  if (guess.length < 12 || /^[\d\s.,-]+$/.test(guess)) {
+    return clean(entry).replace(/\s*https?:\/\/\S+/g, '').slice(0, 160).trim();
+  }
+  return guess;
 }
 
 /** OpenAlex 결과를 CSL 모양으로 맞춘다 (아래 헬퍼들을 그대로 쓰기 위해) */

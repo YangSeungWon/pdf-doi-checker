@@ -432,7 +432,7 @@ function render() {
     out.append(filterBar(filter, rows.length, entries.length));
   }
 
-  const list = el('div', `reflist${filter ? ' filtered' : ''}`);
+  const list = el('div', 'reflist');
   appendRows(list, rows, !filter);
   out.append(list);
   if (filter) out.append(clearButton('bottom'));
@@ -648,7 +648,9 @@ function repoBlock(repo) {
   if (repo.state === 'dead') {
     v.append(el('div', 'cand-t', T.note.repoGone));
   } else {
-    v.append(el('div', 'cand-t', repo.name || ''));
+    const line = el('div', 'cand-t');
+    line.append(repo.page ? outLink(repo.page, repo.name || repo.page) : el('span', null, repo.name || ''));
+    v.append(line);
     if (repo.note === 'archived') v.append(el('div', 'note', T.note.archived));
   }
   box.append(v);

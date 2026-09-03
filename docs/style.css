@@ -239,9 +239,6 @@ button.ghost { font-size: .95rem; padding: .45rem .95rem; color: var(--dim); }
   background: var(--warn); border-color: var(--warn);
 }
 
-/* 필터 중에는 목록이 좁혀져 있다는 걸 왼쪽 선으로 계속 상기시킨다 */
-.reflist.filtered { border-left: 3px solid var(--accent); padding-left: 1.1rem; }
-
 /* 참고문헌 목록 — 번호를 거터에 두고 헤어라인으로만 나눈다 */
 .reflist { border-bottom: 1px solid var(--line); margin-top: 1.25rem; }
 .ref { border-top: 1px solid var(--line); }
