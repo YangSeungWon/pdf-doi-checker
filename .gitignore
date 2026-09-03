@@ -1,0 +1,7 @@
+# 테스트용 논문 PDF (저작권)
+*.pdf
+!docs/**/*.pdf
+
+__pycache__/
+*.pyc
+.DS_Store
