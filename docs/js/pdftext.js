@@ -52,6 +52,40 @@ function detectGutter(items, pageWidth) {
   return cut;
 }
 
+const INT_RE = /^\d{1,5}$/;
+
+/**
+ * 여백의 줄번호를 지운다 (ACM 투고 양식 등).
+ * 본문과 y 가 거의 같아서 그대로 두면 "Attention Is 1319 All You Need" 처럼
+ * 참고문헌 한가운데로 섞여 들어가고, "[12]" 마커가 줄머리에서 밀려난다.
+ */
+function dropLineNumbers(items) {
+  const nums = items.filter(it => INT_RE.test(it.str.trim()));
+  if (nums.length < 8) return items;
+
+  const bins = new Map();                       // x(3pt 단위) → 정수 아이템
+  for (const it of nums) {
+    const k = Math.round(it.x / 3);
+    if (!bins.has(k)) bins.set(k, []);
+    bins.get(k).push(it);
+  }
+
+  const drop = new Set();
+  for (const [k, group] of bins) {
+    if (group.length < 8) continue;
+    // 같은 세로줄에 놓인 아이템이 거의 전부 숫자여야 여백 줄번호다
+    const band = items.filter(it => Math.abs(it.x - k * 3) <= 3);
+    if (group.length / band.length < 0.9) continue;
+    // 위에서 아래로 대체로 증가해야 한다
+    const seq = [...group].sort((a, b) => b.y - a.y).map(it => +it.str.trim());
+    let inc = 0;
+    for (let i = 1; i < seq.length; i++) if (seq[i] > seq[i - 1]) inc++;
+    if (inc < (seq.length - 1) * 0.8) continue;
+    for (const it of group) drop.add(it);
+  }
+  return drop.size ? items.filter(it => !drop.has(it)) : items;
+}
+
 /** 같은 y 에 있는 조각들을 한 줄로 묶고, 조각 사이 간격을 보고 공백을 넣는다 */
 function buildLines(items) {
   if (!items.length) return [];
@@ -91,22 +125,54 @@ function buildLines(items) {
   return out;
 }
 
-/** 페이지마다 반복되는 머리글/바닥글 제거 (참고문헌 한가운데로 끼어든다) */
-export function stripRunningHeads(lines, minRepeat = 4) {
-  const freq = new Map();
-  for (const l of lines) {
-    const k = l.trim();
-    if (k) freq.set(k, (freq.get(k) || 0) + 1);
+const mask = l => l.replace(/\d+/g, '#');
+
+/** 쪽번호만 바뀌는 머리글 후보인가 ("24 Anon." 는 예, "#–#." 는 아님) */
+function headLike(l) {
+  if (/(?:doi:|https?:|10\.\d)/i.test(l)) return false;      // 본문/DOI 보호
+  const letters = (l.match(/[A-Za-z\u00C0-\u024F]/g) || []).length;
+  return letters / l.length >= 0.5 && /[A-Za-z]{3,}/.test(l);
+}
+
+/**
+ * 페이지마다 반복되는 머리글/바닥글 제거 (참고문헌 한가운데로 끼어든다).
+ *
+ * 글자가 똑같이 반복되면 어디에 있든 지운다. 쪽번호가 섞여 매번 달라지는
+ * "24 Anon." 류는 숫자를 가린 형태로 세되, 본문을 잘못 지우지 않도록
+ * 페이지의 맨 위/아래 두 줄에만 적용한다.
+ *
+ * @param {string[][]} pageLines 페이지별 줄 목록
+ */
+export function stripRunningHeads(pageLines, minRepeat = 4) {
+  const exact = new Map();
+  const masked = new Map();
+  for (const page of pageLines) {
+    page.forEach((l, i) => {
+      const k = l.trim();
+      if (!k) return;
+      exact.set(k, (exact.get(k) || 0) + 1);
+      if (i < 2 || i >= page.length - 2) masked.set(mask(k), (masked.get(mask(k)) || 0) + 1);
+    });
   }
-  const heads = new Set();
-  for (const [l, n] of freq) {
-    if (n >= minRepeat && l.length >= 8 && l.length <= 150 && !l.startsWith('[')) heads.add(l);
+
+  const removed = new Set();
+  const lines = [];
+  for (const page of pageLines) {
+    page.forEach((l, i) => {
+      const k = l.trim();
+      if (!k) return;
+      if (!k.startsWith('[') && k.length >= 8) {
+        if (k.length <= 150 && (exact.get(k) || 0) >= minRepeat) { removed.add(k); return; }
+        const edge = i < 2 || i >= page.length - 2;
+        if (edge && k.length <= 120 && headLike(k) && (masked.get(mask(k)) || 0) >= minRepeat) {
+          removed.add(mask(k));
+          return;
+        }
+      }
+      lines.push(l);
+    });
   }
-  if (!heads.size) return { lines, removed: [] };
-  return {
-    lines: lines.filter(l => !heads.has(l.trim())),
-    removed: [...heads],
-  };
+  return { lines, removed: [...removed] };
 }
 
 /**
@@ -121,28 +187,28 @@ export async function extractText(pdfjsLib, arrayBuffer, onProgress) {
   const doc = await task.promise;
   const numPages = doc.numPages;
 
-  const allLines = [];
+  const pageLines = [];
   const columns = [];
   for (let p = 1; p <= numPages; p++) {
     const page = await doc.getPage(p);
     const viewport = page.getViewport({ scale: 1 });
-    const items = itemsOfPage(await page.getTextContent());
+    const items = dropLineNumbers(itemsOfPage(await page.getTextContent()));
     const cut = detectGutter(items, viewport.width);
     columns.push(cut ? 2 : 1);
 
     if (cut === null) {
-      allLines.push(...buildLines(items));
+      pageLines.push(buildLines(items));
     } else {
       const left = [], right = [];
       for (const it of items) (it.x + it.w / 2 < cut ? left : right).push(it);
-      allLines.push(...buildLines(left), ...buildLines(right));
+      pageLines.push([...buildLines(left), ...buildLines(right)]);
     }
     page.cleanup();
     onProgress?.(p, numPages);
   }
   await task.destroy();
 
-  const { lines, removed } = stripRunningHeads(allLines);
+  const { lines, removed } = stripRunningHeads(pageLines);
   return {
     text: lines.join('\n'),
     pages: numPages,

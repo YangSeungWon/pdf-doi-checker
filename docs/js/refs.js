@@ -67,6 +67,40 @@ function joinLines(block) {
   return s.replace(/\s{2,}/g, ' ').trim();
 }
 
+function buildEntries(refsText, marks) {
+  const entries = [];
+  for (let i = 0; i < marks.length; i++) {
+    const stop = i + 1 < marks.length ? marks[i + 1].start : refsText.length;
+    let body = joinLines(refsText.slice(marks[i].end, stop));
+    if (i + 1 === marks.length) {
+      body = body.split(/\s(?=(?:[A-Z]\s+)?(?:Appendix|APPENDIX|Appendices|Acknowledg|ACKNOWLEDG|Supplementary|SUPPLEMENTARY)\b)/)[0].slice(0, 3000);
+    }
+    if (body) entries.push({ label: String(marks[i].num), entry: body });
+  }
+  return entries;
+}
+
+/**
+ * 마커가 줄머리에 없을 때의 대비책: 위치를 따지지 않고 [n] 을 훑되,
+ * 1(또는 2)부터 1씩 증가하는 것만 채택한다. 본문 속 인용 표기에 휘둘리지 않는다.
+ */
+function looseMarks(refsText) {
+  const re = /\[(\d{1,4})\]/g;
+  const marks = [];
+  let expect = null, m;
+  while ((m = re.exec(refsText)) !== null) {
+    const n = +m[1];
+    if (expect === null) {
+      if (n > 2) continue;
+      expect = n;
+    }
+    if (n !== expect) continue;
+    marks.push({ num: n, start: m.index, end: m.index + m[0].length });
+    expect++;
+  }
+  return marks;
+}
+
 /** @returns {{label: string, entry: string}[]} */
 export function splitEntries(refsText) {
   for (const re of [BRACKET_RE, DOTTED_RE]) {
@@ -85,14 +119,13 @@ export function splitEntries(refsText) {
     for (let i = 1; i < marks.length; i++) if (marks[i].num > marks[i - 1].num) inc++;
     if (inc < marks.length * 0.7) continue;
 
-    const entries = [];
-    for (let i = 0; i < marks.length; i++) {
-      const stop = i + 1 < marks.length ? marks[i + 1].start : refsText.length;
-      let body = joinLines(refsText.slice(marks[i].end, stop));
-      if (i + 1 === marks.length) {
-        body = body.split(/\s(?=[A-Z]\s+(?:Appendix|APPENDIX)\b)/)[0].slice(0, 3000);
-      }
-      if (body) entries.push({ label: String(marks[i].num), entry: body });
+    let entries = buildEntries(refsText, marks);
+
+    // 마커를 놓쳤는지 확인: 번호는 60 까지 가는데 20 건만 잡혔다면 줄머리 가정이 틀린 것
+    const maxNum = Math.max(...marks.map(x => x.num));
+    if (entries.length < maxNum * 0.6) {
+      const loose = looseMarks(refsText);
+      if (loose.length > marks.length) entries = buildEntries(refsText, loose);
     }
     if (entries.length) return entries;
   }

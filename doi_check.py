@@ -186,7 +186,9 @@ def split_entries(refs_text: str) -> list[tuple[str, str]]:
             body = _join_lines(refs_text[m.end() : end])
             # 부록/다음 섹션이 붙어 들어온 마지막 항목 정리
             if i + 1 == len(marks):
-                body = re.split(r"\s(?=[A-Z]\s+(?:Appendix|APPENDIX)\b)", body)[0]
+                body = re.split(
+                    r"\s(?=(?:[A-Z]\s+)?(?:Appendix|APPENDIX|Appendices|Acknowledg|ACKNOWLEDG"
+                    r"|Supplementary|SUPPLEMENTARY)\b)", body)[0]
                 body = body[:3000]
             if body:
                 entries.append((m.group(1), body))
