@@ -22,7 +22,7 @@ const STR = {
     k: {
       match: 'Match', warn: 'Warning', error: 'Error',
       found: 'Verified', likely: 'Likely', none: 'Not found',
-      web: 'Web page', fail: 'Search failed',
+      repo: 'Repository', web: 'Web page', fail: 'Search failed',
     },
     tip: {
       match: 'Matches the official record.',
@@ -31,6 +31,7 @@ const STR = {
       found: 'Matches a real record. The DOI is missing from the reference — you can add it.',
       likely: 'Probable match — check before adding.',
       none: 'Nothing convincing on Crossref.',
+      repo: 'Software or model repository — no DOI is expected.',
       web: 'Web page citation — no DOI to find.',
       fail: 'Request failed. Lower parallel requests and retry.',
     },
@@ -59,8 +60,6 @@ const STR = {
     loading: '…',
     copy: 'Copy',
     copied: 'Copied',
-    dlBib: 'Download .bib',
-    dlBibTip: 'Official BibTeX for every DOI that resolved, including the ones found on Crossref.',
     debug: 'Parsed references',
     pdfOnly: 'PDF files only.',
     fetchFail: 'Could not fetch',
@@ -113,7 +112,7 @@ const STR = {
     k: {
       match: '일치', warn: '경고', error: '오류',
       found: '확인됨', likely: '추정', none: '못 찾음',
-      web: '웹페이지', fail: '검색 실패',
+      repo: '저장소', web: '웹페이지', fail: '검색 실패',
     },
     tip: {
       match: '공식 기록과 일치합니다.',
@@ -122,6 +121,7 @@ const STR = {
       found: '실제 기록과 일치합니다. 참고문헌에 DOI만 빠져 있어 넣을 수 있습니다.',
       likely: '아마 맞음 — 확인하고 넣으세요.',
       none: 'Crossref에서 설득력 있는 후보를 못 찾았습니다.',
+      repo: '소프트웨어·모델 저장소 — DOI가 없는 것이 정상입니다.',
       web: '웹페이지 인용 — 찾을 DOI가 없습니다.',
       fail: '요청 실패. 동시 요청을 줄이고 다시 시도하세요.',
     },
@@ -150,8 +150,6 @@ const STR = {
     loading: '…',
     copy: '복사',
     copied: '복사됨',
-    dlBib: 'Download .bib',
-    dlBibTip: 'Official BibTeX for every DOI that resolved, including the ones found on Crossref.',
     debug: '추출된 참고문헌',
     pdfOnly: 'PDF만 됩니다.',
     fetchFail: '가져오지 못함',

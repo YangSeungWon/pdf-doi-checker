@@ -16,9 +16,17 @@ pdfjsLib.GlobalWorkerOptions.workerSrc =
 const WEBISH_RE =
   /\bretrieved\b[\s\S]{0,40}\bfrom\b\s*https?:\/\/|^\s*https?:\/\/|\baccessed\b[\s\S]{0,20}\d{4}/i;
 
+// 소프트웨어·모델 저장소. DOI 가 없는 것이 정상이라 못 찾았다고 할 일이 아니다.
+// (Zenodo·figshare 는 DOI 를 발급하므로 제외)
+const REPO_RE = new RegExp(
+  '(?:^|//|\\.)(?:github\\.com|gitlab\\.com|bitbucket\\.org|gitee\\.com|codeberg\\.org'
+  + '|huggingface\\.co|modelscope\\.cn|ollama\\.com|kaggle\\.com'
+  + '|pypi\\.org|npmjs\\.com|crates\\.io|rubygems\\.org|sourceforge\\.net)/',
+  'i');
+
 const ICON = {
   error: '✕', warn: '!', match: '✓',
-  found: '✓', likely: '?', none: '—', web: '🔗', fail: '⚠',
+  found: '✓', likely: '?', none: '—', repo: '⌘', web: '🔗', fail: '⚠',
 };
 const LANG_NAME = { en: 'EN', ko: '한국어' };
 
@@ -93,7 +101,7 @@ async function analyze(file) {
   $('#run').disabled = true;
   $('#results').innerHTML = '';
   $('#summary').hidden = true;
-  $('#exports').hidden = true;
+  $('#restart').hidden = true;
 
   try {
     const opts = { findMissing: true, mailto: '', workers: 6 };
@@ -209,6 +217,7 @@ function pickBest(entry, cands, source) {
 
 /** 참고문헌 원문으로 올바른 문헌을 찾아본다 */
 async function searchOne(item, mailto) {
+  if (REPO_RE.test(item.entry)) return { ...item, found: null, skipped: 'repo' };
   if (WEBISH_RE.test(item.entry)) return { ...item, found: null, skipped: 'web' };
   const search = await crossrefSearch(item.entry, { rows: 3, mailto });
   if (!search.ok) return { ...item, found: null, skipped: 'error' };
@@ -275,6 +284,7 @@ function bucketOf(r, kind) {
     if (r.issues.some(i => i.severity === 'error')) return 'error';
     return r.issues.length ? 'warn' : 'match';
   }
+  if (r.skipped === 'repo') return 'repo';
   if (r.skipped === 'web') return 'web';
   if (r.skipped === 'error') return 'fail';
   if (!r.found) return 'none';
@@ -282,7 +292,7 @@ function bucketOf(r, kind) {
 }
 
 const DOI_KEYS = ['error', 'warn', 'match'];
-const NODOI_KEYS = ['found', 'likely', 'none', 'web', 'fail'];
+const NODOI_KEYS = ['found', 'likely', 'none', 'repo', 'web', 'fail'];
 
 function counted(list, kind, keys) {
   const c = Object.fromEntries(keys.map(k => [k, 0]));
@@ -402,7 +412,7 @@ function render() {
   const list = el('div', 'reflist');
   appendRows(list, rows, !filter);
   out.append(list);
-  $('#exports').hidden = false;
+  $('#restart').hidden = false;
 }
 
 /**
@@ -450,7 +460,7 @@ function gapBand(run) {
 // 손볼 것이 없는 것들. 펼치지 않고, 이어지면 중략 띠로 접는다.
 // '확인됨' 도 여기 든다 — 틀린 데가 없고 넣을 DOI 가 있을 뿐이라,
 // 그 사실은 띠에 개수로만 남기고 자세한 건 칩으로 걸러 본다.
-const CLEAN = ['match', 'found', 'web'];
+const CLEAN = ['match', 'found', 'repo', 'web'];
 
 /** 참고문헌 한 건. 문제 없는 건 접어둔다. */
 function refItem({ r, src, kind }) {
@@ -634,41 +644,6 @@ function renderDebug() {
 }
 
 // ---------------------------------------------------------------------------
-// 내려받기
-// ---------------------------------------------------------------------------
-
-function download(name, text, type = 'application/json') {
-  const url = URL.createObjectURL(new Blob([text], { type: type + ';charset=utf-8' }));
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = name;
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
-}
-
-const baseName = () => (report?.file || 'refs').replace(/\.pdf$/i, '');
-
-async function exportBibtex() {
-  const btn = $('#dl-bib');
-  const orig = btn.lastChild.textContent;
-  btn.disabled = true;
-  const seen = new Set();
-  const uniq = [
-    ...report.checked.filter(r => r.status === 200).map(r => r.doi),
-    ...report.withoutDoi.filter(r => r.found).map(r => r.found.doi),
-  ].filter(d => d && !seen.has(d) && seen.add(d));
-
-  const out = [];
-  await pool(uniq, 6, async doi => {
-    const res = await fetchDoi(doi, 'bib');
-    if (res.ok) out.push(res.body.trim());
-  }, (d, n) => (btn.lastChild.textContent = `${d}/${n}`));
-  download(`${baseName()}.bib`, out.join('\n\n') + '\n', 'text/plain');
-  btn.lastChild.textContent = orig;
-  btn.disabled = false;
-}
-
-// ---------------------------------------------------------------------------
 // 배선
 // ---------------------------------------------------------------------------
 
@@ -768,7 +743,7 @@ $('#change').addEventListener('click', () => {
   fileInput.value = '';
   showDropState();
 });
-$('#reset').addEventListener('click', () => {
+function resetAll() {
   report = null;
   picked = null;
   filter = null;
@@ -777,13 +752,15 @@ $('#reset').addEventListener('click', () => {
   $('#pick').hidden = false;
   showDropState();
   fileInput.value = '';
-  for (const id of ['#summary', '#exports', '#debug']) $(id).hidden = true;
+  for (const id of ['#summary', '#restart', '#debug']) $(id).hidden = true;
   $('#results').innerHTML = '';
   hideProgress();
   setStatus('');
   window.scrollTo({ top: 0, behavior: 'smooth' });
-});
-$('#dl-bib').addEventListener('click', exportBibtex);
+}
+
+$('#reset').addEventListener('click', resetAll);
+$('#reset-bottom').addEventListener('click', resetAll);
 setLang(getLang());
 applyStatic();
 $('#pdfjs-version').textContent = pdfjsLib.version;

@@ -92,7 +92,10 @@ body.dragging { outline: 3px solid var(--accent); outline-offset: -3px; }
 
 /* ---- controls ---- */
 .actions { display: flex; gap: .75rem; flex-wrap: wrap; align-items: center; margin-top: 1.25rem; }
-.exports { margin: 0 0 1.5rem; }
+
+/* 결과를 다 본 뒤 다음 PDF 로 넘어가는 자리 */
+.restart { display: flex; justify-content: center; margin: 6rem 0 3rem; }
+.restart button { font-size: 1rem; padding: .6rem 1.4rem; }
 button {
   font: inherit; font-size: 1rem; border-radius: 9px; padding: .6rem 1.2rem;
   cursor: pointer; border: 1px solid var(--line); background: var(--panel); color: var(--fg);
@@ -144,7 +147,7 @@ button.ghost { font-size: .95rem; padding: .45rem .95rem; color: var(--dim); }
 .seg.warn, .seg.likely { background: #b8862b; }
 .seg.error, .seg.fail { background: #b3463c; }
 .seg.none { background: #8d8981; }
-.seg.web { background: #6f7b8c; }
+.seg.repo, .seg.web { background: #6f7b8c; }
 .seg:hover { filter: brightness(1.12); }
 
 .legend { display: flex; flex-wrap: wrap; gap: .45rem; }
@@ -250,10 +253,18 @@ button.ghost { font-size: .95rem; padding: .45rem .95rem; color: var(--dim); }
   border: 1px solid currentColor; padding: 0 .4rem; margin-left: auto;
 }
 .ref-n .st { font-weight: 700; }
-.st.error, .st.fail { color: var(--err); }
+.st.error, .st.fail, .st.none { color: var(--err); }
 .st.warn, .st.likely { color: var(--warn); }
 .st.match, .st.found { color: var(--ok); }
-.st.none, .st.web { color: var(--dim); }
+.st.repo, .st.web { color: var(--dim); }
+
+/* 손봐야 하는 줄은 바탕으로 짚어 준다.
+   빨강 = 틀렸거나 끝내 확인 못 함, 노랑 = 사람이 봐야 함 */
+.ref.error, .ref.none, .ref.fail { background: var(--err-bg); }
+.ref.warn, .ref.likely { background: var(--warn-bg); }
+.ref.error, .ref.none, .ref.fail, .ref.warn, .ref.likely {
+  padding-inline: .9rem; margin-inline: -.9rem;
+}
 
 .doi { font-family: var(--mono); font-size: .9rem; color: var(--dim); text-decoration: none; overflow-wrap: anywhere; }
 .doi:hover { color: var(--accent); text-decoration: underline; }

@@ -670,6 +670,14 @@ WEBISH_RE = re.compile(
     r"(?i)\bretrieved\b.{0,40}\bfrom\b\s*https?://|^\s*https?://|\baccessed\b.{0,20}\d{4}"
 )
 
+# 소프트웨어·모델 저장소. DOI 가 없는 것이 정상이라 못 찾았다고 할 일이 아니다.
+# (Zenodo·figshare 는 DOI 를 발급하므로 제외)
+REPO_RE = re.compile(
+    r"(?i)(?:^|//|\.)(?:github\.com|gitlab\.com|bitbucket\.org|gitee\.com|codeberg\.org"
+    r"|huggingface\.co|modelscope\.cn|ollama\.com|kaggle\.com"
+    r"|pypi\.org|npmjs\.com|crates\.io|rubygems\.org|sourceforge\.net)/"
+)
+
 
 def crossref_search(entry: str, rows: int = 3, use_cache: bool = True) -> tuple[list[dict], bool]:
     """참고문헌 원문을 통째로 넣어 Crossref 서지검색.
@@ -867,6 +875,10 @@ def openalex_candidate(entry: str, use_cache: bool) -> dict | None:
 
 def find_one(item: dict, use_cache: bool) -> dict:
     entry = item["entry"]
+    if REPO_RE.search(entry):
+        item["found"] = None
+        item["skipped"] = "repo"         # 소프트웨어·모델 저장소 — DOI 가 없는 게 정상
+        return item
     if WEBISH_RE.search(entry):
         item["found"] = None
         item["skipped"] = "web"          # 웹페이지 인용 — 애초에 DOI가 없다
@@ -1062,12 +1074,13 @@ def main() -> int:
         hi = [r for r in found_results if r.get("found") and r["found"]["score"]["level"] == "high"]
         mid = [r for r in found_results if r.get("found") and r["found"]["score"]["level"] == "medium"]
         web = [r for r in found_results if r.get("skipped") == "web"]
+        repo = [r for r in found_results if r.get("skipped") == "repo"]
         failed = [r for r in found_results if r.get("skipped") == "error"]
 
         print(f"\n{c.B}DOI 없는 항목 {len(without_doi)}건 검색 결과{c.X}: "
               f"{c.G}확실 {len(hi)}{c.X} / {c.Y}추정 {len(mid)}{c.X} / "
-              f"못 찾음 {len(found_results) - len(hi) - len(mid) - len(web) - len(failed)} / "
-              f"{c.D}웹페이지라 건너뜀 {len(web)}{c.X}"
+              f"못 찾음 {len(found_results) - len(hi) - len(mid) - len(web) - len(repo) - len(failed)} / "
+              f"{c.D}저장소 {len(repo)} · 웹페이지 {len(web)}{c.X}"
               + (f" / {c.R}검색 실패 {len(failed)}{c.X}" if failed else ""))
         if failed:
             print(f"   {c.R}Crossref 검색이 실패한 항목{c.X} (일시적일 수 있으니 --workers 를 줄여 다시 시도): "
