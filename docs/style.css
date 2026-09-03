@@ -94,8 +94,18 @@ button.primary {
 button.ghost { font-size: .95rem; padding: .45rem .95rem; color: var(--dim); }
 
 .status { margin: 1.1rem 0 0; font-size: 1rem; color: var(--dim); }
-.progress { height: 5px; background: var(--line); border-radius: 3px; margin-top: .6rem; overflow: hidden; }
-#bar { height: 100%; width: 0; background: var(--accent); transition: width .2s; }
+/* 진행 표시 — 몇 개 중 몇 개인지가 주, 단계는 부 */
+.progress { margin: 1.75rem 0; }
+.pg-main {
+  display: flex; align-items: baseline; gap: .3rem;
+  font-variant-numeric: tabular-nums; line-height: 1.1;
+}
+#pg-n { font-size: 2.6rem; font-weight: 680; }
+.pg-slash, #pg-t { font-size: 1.5rem; color: var(--dim); }
+.pg-u { font-size: 1rem; color: var(--dim); margin-left: .35rem; align-self: center; }
+.pg-sub { font-size: .95rem; color: var(--dim); margin-top: .2rem; }
+.pg-track { height: 4px; background: var(--line); margin-top: .8rem; overflow: hidden; }
+#bar { height: 100%; width: 0; background: var(--accent); transition: width .25s; }
 
 /* ---- summary ---- */
 .summary { margin-bottom: 1.75rem; }
